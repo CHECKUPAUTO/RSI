@@ -29,7 +29,7 @@ pub struct AuditEvent {
 
 impl AuditEvent {
     /// Charge utile canonique (déterministe) servant au calcul du hash de lien.
-    fn payload(&self) -> String {
+    pub(crate) fn payload(&self) -> String {
         format!(
             "t={};si={:.9};safe={:.9};risk={:.9};rpn={:.9};crit={};strat={};peff={:.9}",
             self.t,

@@ -44,6 +44,9 @@
 pub mod agent;
 pub mod api;
 pub mod audit;
+// NOTE : `ccos_audit` (adaptateur d'audit CCOS) n'est volontairement pas
+// déclaré ici tant que le dépôt CCOS n'est pas fetchable+licencié — voir
+// l'en-tête de src/ccos_audit.rs pour les 3 étapes d'activation.
 pub mod cma;
 pub mod criticality;
 #[cfg(feature = "forge")]

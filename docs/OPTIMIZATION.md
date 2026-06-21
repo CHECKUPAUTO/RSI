@@ -100,11 +100,27 @@ prev_hash, hash, event_type, payload }`). Chaque pas de `ℳ` est enregistré :
 Branchement : `RSIAgent::with_audit(Box::new(HashChainLog::new()))`, puis
 `audit_head()`, `audit_verify()`, `audit_len()`.
 
-> **Pourquoi pas une dépendance directe à CCOS ?** CCOS n'a **aucune licence**
-> et tire `tokio(full)` + `reqwest` (non optionnels). Plutôt que d'imposer ce
-> poids et ce risque juridique, le port d'audit reproduit nativement le schéma
-> hash-chaîné de CCOS (zéro dépendance) et **exporte au format CCOS** : le pont
-> réel sera trivial une fois CCOS doté d'une licence.
+> **Pourquoi pas une dépendance directe à CCOS ?** Le port d'audit reproduit
+> nativement le schéma hash-chaîné de CCOS (zéro dépendance) et **exporte au
+> format CCOS**.
+
+### Adaptateur CCOS prêt à activer
+
+[`src/ccos_audit.rs`](../src/ccos_audit.rs) fournit `CcosAudit`, qui implémente
+`AuditLog` en déléguant à l'`EventLog` de CCOS (`EventType::AgentAction` +
+`EventPayload::Custom`, `verify_integrity`, `replay_events`). Il est écrit contre
+l'API publique vérifiée de CCOS mais **non câblé par défaut** car le dépôt CCOS
+n'est pas encore consommable par cargo :
+
+1. CCOS doit recevoir un `LICENSE.md` (PolyForm Noncommercial, cf. licence du
+   projet) ;
+2. CCOS a un **sous-module git mal configuré** (`no URL configured for submodule
+   'CCOS'`) qui empêche `cargo` de le fetch — même en dépendance optionnelle,
+   cela casse *tous* les builds, d'où le dé-câblage.
+
+Les 3 étapes d'activation (licence + sous-module côté CCOS, puis dep/feature/
+module côté RSI) sont détaillées dans l'en-tête de `src/ccos_audit.rs`. En
+attendant, `HashChainLog` fournit l'auditabilité complète sans dépendance.
 
 ## Effet observé
 
