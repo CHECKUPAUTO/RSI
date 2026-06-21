@@ -1,0 +1,49 @@
+//! # RSI — Recursive Self-Improvement
+//!
+//! Implémentation Rust exécutable du **système mathématique d'auto-amélioration
+//! récursive** (formulation géométrique unifiée, v9).
+//!
+//! Le système modélise un agent cognitif dont la *surface de compétence*
+//! `Σ_I(t)` se déforme sous l'effet de l'apprentissage, du substrat
+//! matériel/logiciel et d'une méta-optimisation récursive, le tout sous des
+//! garde-fous de stabilité.
+//!
+//! ## Correspondance équations ↔ modules
+//!
+//! | Section | Contenu                                            | Module        |
+//! |---------|----------------------------------------------------|---------------|
+//! | §1      | Surface `Σ_I`, `C_réel = min(Φ,g)`, `SI_global`    | [`surface`]   |
+//! | §2      | Vecteur d'état `S = (D,M,R,A,C,V)`                 | [`state`]     |
+//! | §3      | Substrat `P_eff = σ(HᵀAH)·σ(OᵀBO)·σ(HᵀCO)`        | [`substrate`] |
+//! | §4      | Dynamique `dS/dt` + contraintes `‖ΔS‖<λ`, ε        | [`dynamics`]  |
+//! | §5      | Boucle discrète + méta-révision `ℳ = argmax`       | [`meta`]      |
+//! | §5/§6   | Agent complet (forme compacte / équation d'ondes)  | [`agent`]     |
+//!
+//! ## Exemple
+//!
+//! ```
+//! use rsi::RSIAgent;
+//!
+//! let mut agent = RSIAgent::demo(2026);
+//! let start = agent.si_global();
+//! let reports = agent.run(100);
+//! let end = reports.last().unwrap().si_global;
+//! assert!(end >= start); // l'intelligence globale ne régresse pas
+//! ```
+
+pub mod agent;
+pub mod dynamics;
+pub mod linalg;
+pub mod meta;
+pub mod rng;
+pub mod state;
+pub mod substrate;
+pub mod surface;
+
+pub use agent::{RSIAgent, StepReport};
+pub use dynamics::{Dynamics, StabilityConfig, StepInfo};
+pub use meta::{MetaOptimizer, MetaStrategy};
+pub use rng::Rng;
+pub use state::{CognitiveState, Dims};
+pub use substrate::Substrate;
+pub use surface::{Bottleneck, IntelligenceSurface};
