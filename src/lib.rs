@@ -43,6 +43,7 @@
 
 pub mod agent;
 pub mod api;
+pub mod audit;
 pub mod cma;
 pub mod criticality;
 #[cfg(feature = "forge")]
@@ -58,12 +59,14 @@ pub mod meta;
 pub mod octasoma_memory;
 pub mod report;
 pub mod rng;
+pub mod sha256;
 pub mod state;
 pub mod substrate;
 pub mod surface;
 
 pub use agent::{RSIAgent, StepReport};
 pub use api::{ApiResult, RsiApi};
+pub use audit::{AuditEvent, AuditLog, HashChainLog, TraceEvent};
 pub use cma::SepCmaEs;
 pub use criticality::{RiskConfig, RiskModel, RiskReport, RiskSignals};
 #[cfg(feature = "forge")]

@@ -15,6 +15,7 @@
 //! La surface Σ_I n'est pas recalculée explicitement : `SI_global` en est le
 //! résumé scalaire (volume sous Σ_I), suivi à chaque pas.
 
+use crate::audit::{AuditEvent, AuditLog};
 use crate::criticality::{RiskConfig, RiskModel, RiskSignals};
 use crate::dynamics::{Dynamics, StabilityConfig, StepInfo};
 use crate::linalg::mean;
@@ -76,6 +77,8 @@ pub struct RSIAgent {
     pub route_threshold: f64,
     /// nombre de graines mémoire rappelées pour le warm-start de ℳ (§A).
     pub recall_k: usize,
+    /// Journal d'audit hash-chaîné optionnel (§7bis — traçabilité/déterminisme).
+    pub audit: Option<Box<dyn AuditLog>>,
     pub t: usize,
 }
 
@@ -103,8 +106,31 @@ impl RSIAgent {
             meta_interval: 1,
             route_threshold: 0.5,
             recall_k: 4,
+            audit: None,
             t: 0,
         }
+    }
+
+    /// Branche un journal d'audit hash-chaîné (§7bis : traçabilité &
+    /// déterminisme de la récursion ℳ). Builder fluide.
+    pub fn with_audit(mut self, audit: Box<dyn AuditLog>) -> Self {
+        self.audit = Some(audit);
+        self
+    }
+
+    /// Hash de tête du journal d'audit (résumé reproductible), si présent.
+    pub fn audit_head(&self) -> Option<String> {
+        self.audit.as_ref().map(|a| a.head())
+    }
+
+    /// Vérifie l'intégrité du journal d'audit (true si absent).
+    pub fn audit_verify(&self) -> bool {
+        self.audit.as_ref().map(|a| a.verify()).unwrap_or(true)
+    }
+
+    /// Nombre d'événements audités (0 si absent).
+    pub fn audit_len(&self) -> usize {
+        self.audit.as_ref().map(|a| a.len()).unwrap_or(0)
     }
 
     /// (§C) n'exécute la méta-révision que tous les `interval` pas. Builder.
@@ -296,6 +322,23 @@ impl RSIAgent {
         let risk = self.risk_model.assess(&signals);
         let si_safe = self.risk_model.si_safe(si_after, &risk, self.risk_cfg.kappa);
 
+        // §7bis — audit hash-chaîné : trace reproductible et vérifiable du pas ℳ.
+        if self.audit.is_some() {
+            let event = AuditEvent {
+                t: self.t,
+                si_global: si_after,
+                si_safe,
+                risk_global: risk.risk_global,
+                max_rpn: risk.max_rpn,
+                most_critical: risk.most_critical,
+                strategy_id: strategy_hash(&self.strategy),
+                p_eff: self.substrate.effective_power(),
+            };
+            if let Some(a) = self.audit.as_mut() {
+                a.record(&event);
+            }
+        }
+
         // §A — mémorisation : embedding de l'état + stratégie gagnante (pour le
         // warm-start des pas futurs).
         if self.memory.is_some() {
@@ -327,6 +370,19 @@ impl RSIAgent {
     pub fn run(&mut self, n: usize) -> Vec<StepReport> {
         (0..n).map(|_| self.step()).collect()
     }
+}
+
+/// Hash stable (FNV-1a) d'une stratégie ℳ, pour l'identifier dans l'audit.
+fn strategy_hash(strategy: &MetaStrategy) -> u64 {
+    let theta = strategy.encode();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for v in &theta {
+        for b in v.to_le_bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    h
 }
 
 #[cfg(test)]
@@ -405,5 +461,28 @@ mod tests {
         for r in agent.run(40) {
             assert!(r.appr.si_after >= r.appr.si_before - eps - 1e-9);
         }
+    }
+
+    #[test]
+    fn audit_log_traces_and_verifies() {
+        use crate::audit::HashChainLog;
+        let mut agent = RSIAgent::demo(5).with_audit(Box::new(HashChainLog::new()));
+        assert_eq!(agent.audit_len(), 0);
+        agent.run(20);
+        assert_eq!(agent.audit_len(), 20);
+        assert!(agent.audit_verify()); // chaîne intègre
+        assert!(agent.audit_head().is_some());
+    }
+
+    #[test]
+    fn audit_head_is_deterministic() {
+        use crate::audit::HashChainLog;
+        let run = || {
+            let mut a = RSIAgent::demo(123).with_audit(Box::new(HashChainLog::new()));
+            a.run(15);
+            a.audit_head().unwrap()
+        };
+        // même graine + même trajectoire ⇒ même hash de tête (reproductibilité)
+        assert_eq!(run(), run());
     }
 }
