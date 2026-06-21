@@ -15,7 +15,9 @@
 //! Le cœur de RSI reste sans dépendance : ce module n'est compilé que si la
 //! feature `forge` est activée.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use forge_core::{
     fnv1a, Candidate, CandidateId, Config, Domain, Engine, ForgeError, Result as ForgeResult,
@@ -61,10 +63,25 @@ struct RsiDomain {
     n_software: usize,
     explore: f64,
     seed_counter: AtomicUsize,
+    /// (§C) cache des SI_global par candidat (id → SI), évite de recalculer la
+    /// fitness des candidats réapparus au fil des générations.
+    si_cache: Mutex<HashMap<u64, f64>>,
 }
 
 impl RsiDomain {
-    /// SI_global de la stratégie encodée par `theta`.
+    /// SI_global de la stratégie encodée par `theta` (mémoïsé par id de candidat).
+    fn si_cached(&self, cand: &StrategyCand) -> f64 {
+        let id = cand.id();
+        if let Some(v) = self.si_cache.lock().unwrap().get(&id) {
+            return *v;
+        }
+        let si = MetaStrategy::decode(&cand.theta, self.n_software)
+            .projected_si(&self.state, &self.substrate, &self.surface);
+        self.si_cache.lock().unwrap().insert(id, si);
+        si
+    }
+
+    /// SI_global d'un θ brut (non mémoïsé — pour le centre/baseline).
     fn si_of(&self, theta: &[f64]) -> f64 {
         MetaStrategy::decode(theta, self.n_software)
             .projected_si(&self.state, &self.substrate, &self.surface)
@@ -113,8 +130,8 @@ impl Domain for RsiDomain {
     }
 
     fn measure(&self, cand: &StrategyCand, _trial: &Trial) -> ForgeResult<Vec<f64>> {
-        // Forge minimise → on renvoie −SI_global (maximiser SI_global)
-        Ok(vec![-self.si_of(&cand.theta)])
+        // Forge minimise → on renvoie −SI_global (maximiser SI_global) ; §C cache
+        Ok(vec![-self.si_cached(cand)])
     }
 
     fn objective_names(&self) -> Vec<String> {
@@ -138,6 +155,8 @@ pub struct ForgeMetaSearch {
     pub explore: f64,
     seed: u64,
     counter: u64,
+    /// graines mémoire (§A) réinjectées au prochain `revise`.
+    seeds: Vec<MetaStrategy>,
 }
 
 impl ForgeMetaSearch {
@@ -148,6 +167,7 @@ impl ForgeMetaSearch {
             explore: explore.max(1e-4),
             seed,
             counter: 0,
+            seeds: Vec::new(),
         }
     }
 }
@@ -161,7 +181,22 @@ impl MetaSearch for ForgeMetaSearch {
         surface: &IntelligenceSurface,
     ) -> (MetaStrategy, f64) {
         let n_software = current.software_edit.len();
-        let center = current.encode();
+
+        // §A — centre l'exploration sur la meilleure graine mémoire si elle bat
+        // la stratégie courante (warm-start de la campagne Forge).
+        let cur_si = current.projected_si(state, substrate, surface);
+        let mut center_strat = current.clone();
+        let mut center_si = cur_si;
+        for s in self.seeds.drain(..).collect::<Vec<_>>() {
+            if s.software_edit.len() == n_software {
+                let si = s.projected_si(state, substrate, surface);
+                if si > center_si {
+                    center_strat = s;
+                    center_si = si;
+                }
+            }
+        }
+        let center = center_strat.encode();
 
         let base_seed = self.seed ^ self.counter.wrapping_mul(0x9E37_79B9_7F4A_7C15);
         self.counter = self.counter.wrapping_add(1);
@@ -174,6 +209,7 @@ impl MetaSearch for ForgeMetaSearch {
             n_software,
             explore: self.explore,
             seed_counter: AtomicUsize::new(0),
+            si_cache: Mutex::new(HashMap::new()),
         };
 
         let config = Config {
@@ -184,24 +220,30 @@ impl MetaSearch for ForgeMetaSearch {
             worker_addresses: None, // local uniquement (pas de réseau)
         };
 
-        let cur_si = current.projected_si(state, substrate, surface);
+        // baseline = meilleure entre stratégie courante et graine mémoire retenue
+        let baseline_si = center_si;
+        let baseline = center_strat;
 
         // exécute la campagne évolutionnaire
         match Engine::new(domain, config).run() {
             Ok(report) => match report.best {
                 Some(ind) => {
                     // objectives[0] = −SI_global
-                    let si = ind.score.objectives.first().map(|o| -o).unwrap_or(cur_si);
-                    if si >= cur_si {
+                    let si = ind.score.objectives.first().map(|o| -o).unwrap_or(baseline_si);
+                    if si >= baseline_si {
                         (MetaStrategy::decode(&ind.cand.theta, n_software), si)
                     } else {
-                        (current.clone(), cur_si)
+                        (baseline, baseline_si)
                     }
                 }
-                None => (current.clone(), cur_si),
+                None => (baseline, baseline_si),
             },
-            Err(_) => (current.clone(), cur_si), // dégradation gracieuse
+            Err(_) => (baseline, baseline_si), // dégradation gracieuse
         }
+    }
+
+    fn warm_start(&mut self, seeds: &[MetaStrategy]) {
+        self.seeds = seeds.to_vec();
     }
 }
 

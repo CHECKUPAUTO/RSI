@@ -140,6 +140,13 @@ Chaque [`StepReport`](src/agent.rs) expose :
   cargo build --features octasoma           # mémoire C réelle (OctaSoma)
   cargo build --features "forge octasoma"   # tout
   ```
+- **§7 — Modes de défaillance & criticité (AMDEC/FMECA)** : module
+  `criticality.rs` (cœur, sans dépendance) — `RPN`, `Risk_global`, intelligence
+  ajustée au risque `SI_safe = SI_global − κ·Risk_global`, garde-fou de
+  criticité et **routage par criticité**. Chaque `StepReport` expose
+  `risk_global`, `max_rpn`, `most_critical`, `si_safe`. Optimisations
+  d'intégration (mémoire active, canal substrat unifié, campagnes amorties) :
+  voir [`docs/OPTIMIZATION.md`](docs/OPTIMIZATION.md).
 
 ### Intégration agent IA / LLM
 

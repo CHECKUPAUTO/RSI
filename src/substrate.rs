@@ -80,12 +80,30 @@ impl Substrate {
         sigmoid(self.a.quadratic(&self.h))
     }
 
-    /// Efficience logicielle ∈ (0, 1) : la valeur **mesurée** si disponible
-    /// (Phase 2), sinon la forme analytique σ(OᵀB O).
+    /// Efficience logicielle **analytique** seule σ(OᵀB O) (sans la mesure).
+    pub fn analytic_software_efficiency(&self) -> f64 {
+        sigmoid(self.b.quadratic(&self.o))
+    }
+
+    /// Écart (≥0) entre l'efficience effective et l'analytique : proxy de
+    /// *wireheading* (§7, f7) — l'agent gonfle-t-il la *mesure* au-delà de ce
+    /// que `O` justifie analytiquement ?
+    pub fn software_eff_gap(&self) -> f64 {
+        (self.software_efficiency() - self.analytic_software_efficiency()).max(0.0)
+    }
+
+    /// Efficience logicielle ∈ (0, 1).
+    ///
+    /// **Canal unifié** : on combine la forme analytique σ(OᵀB O) — pilotée par
+    /// le `software_edit` de ℳ — et l'efficience *mesurée* (Phase 2, campagne
+    /// Forge) par un **maximum**. Les deux leviers d'auto-amélioration
+    /// logicielle coopèrent au lieu de se neutraliser : améliorer `O` reste
+    /// utile même après une mesure, et la mesure agit comme un plancher.
     pub fn software_efficiency(&self) -> f64 {
+        let analytic = sigmoid(self.b.quadratic(&self.o));
         match self.measured_software_eff {
-            Some(v) => v,
-            None => sigmoid(self.b.quadratic(&self.o)),
+            Some(v) => analytic.max(v),
+            None => analytic,
         }
     }
 
@@ -116,13 +134,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn measured_eff_overrides_analytic() {
+    fn software_efficiency_combines_by_max() {
         let mut rng = Rng::new(3);
         let mut s = Substrate::default_with(4, 4, &mut rng);
         let analytic = s.software_efficiency();
+        // mesuré supérieur → l'emporte (plancher)
         s.set_measured_software_eff(Some(0.95));
         assert!((s.software_efficiency() - 0.95).abs() < 1e-12);
-        assert_ne!(analytic, s.software_efficiency());
+        // mesuré inférieur → l'analytique (piloté par O) reste utilisé
+        s.set_measured_software_eff(Some(analytic * 0.5));
+        assert!((s.software_efficiency() - analytic).abs() < 1e-12);
+        // effacé → analytique
         s.set_measured_software_eff(None);
         assert!((s.software_efficiency() - analytic).abs() < 1e-12);
     }

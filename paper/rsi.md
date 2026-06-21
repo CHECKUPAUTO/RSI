@@ -294,7 +294,55 @@ meta-objective that could be gamed.
 
 ---
 
-## 7. Conclusion
+## 7. Failure modes and criticality (FMECA)
+
+Because recursive self-improvement *amplifies* failures, a safety-critical RSI
+model needs more than the pointwise safeguards of §2.4: it needs an explicit
+theory of failure modes, their **criticality**, and a **risk-adjusted**
+objective.
+
+For each failure mode `f` we score three factors in `[0,1]` — severity `S_f`,
+occurrence `O_f` (a function of the live signals), and detection difficulty
+`D_f` — and form the Risk Priority Number
+
+```
+RPN_f = S_f · O_f · D_f.
+```
+
+The principal RSI failure modes, with state-dependent occurrence and the
+mechanism that detects them:
+
+| Mode | Occurrence | Detector |
+|------|-----------|----------|
+| competence regression | `−ΔSI / ε` | ε safeguard |
+| instability / divergence | `‖ΔS‖ / λ` | λ safeguard |
+| value drift | `A − V` | (FMECA) |
+| substrate collapse | `(1 − P_eff)·frac_substrate` | bottleneck |
+| Goodhart / overfitting | `backtracks / 5` | line search |
+| memory poisoning | base, if memory active | (CCOS, future) |
+| wireheading | `max(0, measured − analytic)` | Forge `verify` |
+
+Aggregating, `Risk_global(t) = mean_f RPN_f`, and the **risk-adjusted
+intelligence** is
+
+```
+SI_safe(t) = SI_global(t) − κ · Risk_global(t).
+```
+
+The meta-revision can then optimize `SI_safe` instead of `SI_global`, subject to
+a **criticality safeguard** `max_f RPN_f < RPN_max` (when violated, the agent
+takes a conservative step by damping the gain of `ℳ`). The λ/ε safeguards of
+§2.4 are recovered as special cases (the regression and instability modes), so
+FMECA *subsumes and generalizes* the original stability theory. Operationally,
+the most-critical mode drives **criticality routing** (a generalization of the
+bottleneck routing of §4): improvement effort is allocated where the criticality
+is highest. CCOS, with its hash-chained event log and deterministic replay, is
+the natural detector/forensics layer raising detectability for the hardest modes
+(memory poisoning, wireheading).
+
+---
+
+## 8. Conclusion
 
 We gave a compact, fully specified geometric model of recursive
 self-improvement in which an agent's competence surface deforms under learning,

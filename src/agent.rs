@@ -15,9 +15,14 @@
 //! La surface Σ_I n'est pas recalculée explicitement : `SI_global` en est le
 //! résumé scalaire (volume sous Σ_I), suivi à chaque pas.
 
+use crate::criticality::{RiskConfig, RiskModel, RiskSignals};
 use crate::dynamics::{Dynamics, StabilityConfig, StepInfo};
+use crate::linalg::mean;
 use crate::memory::ContextMemory;
-use crate::meta::{CmaEsMeta, MetaOptimizer, MetaSearch, MetaStrategy};
+use crate::meta::{
+    decode_strategy_payload, encode_strategy_payload, CmaEsMeta, MetaOptimizer, MetaSearch,
+    MetaStrategy,
+};
 use crate::state::{delta_norm, CognitiveState, Dims};
 use crate::substrate::{Substrate, SubstrateImprover};
 use crate::surface::IntelligenceSurface;
@@ -34,6 +39,12 @@ pub struct StepReport {
     pub appr: StepInfo,
     pub frac_limited_by_substrate: f64,
     pub capabilities: [f64; 6], // (D,M,R,A,C,V)
+    // §7 — criticité (AMDEC)
+    pub risk_global: f64,
+    pub max_rpn: f64,
+    pub most_critical: &'static str,
+    /// SI_safe = SI_global − κ · Risk_global.
+    pub si_safe: f64,
 }
 
 /// Agent cognitif auto-améliorant.
@@ -54,6 +65,17 @@ pub struct RSIAgent {
     /// Mémoire contextuelle optionnelle (Phase 3 — composante `C` réelle).
     /// Quand présente, l'agent y écrit son état à chaque pas.
     pub memory: Option<Box<dyn ContextMemory>>,
+    /// Modèle de criticité AMDEC (§7).
+    pub risk_model: RiskModel,
+    /// Garde-fous de criticité (§7).
+    pub risk_cfg: RiskConfig,
+    /// (§C) la méta-révision n'est exécutée que tous les `meta_interval` pas.
+    pub meta_interval: usize,
+    /// (§D) seuil de routage par criticité : l'améliorateur de substrat n'est
+    /// invoqué que si la fraction limitée par le substrat dépasse ce seuil.
+    pub route_threshold: f64,
+    /// nombre de graines mémoire rappelées pour le warm-start de ℳ (§A).
+    pub recall_k: usize,
     pub t: usize,
 }
 
@@ -76,8 +98,31 @@ impl RSIAgent {
             meta,
             substrate_opt: None,
             memory: None,
+            risk_model: RiskModel::new(),
+            risk_cfg: RiskConfig::default(),
+            meta_interval: 1,
+            route_threshold: 0.5,
+            recall_k: 4,
             t: 0,
         }
+    }
+
+    /// (§C) n'exécute la méta-révision que tous les `interval` pas. Builder.
+    pub fn with_meta_interval(mut self, interval: usize) -> Self {
+        self.meta_interval = interval.max(1);
+        self
+    }
+
+    /// (§7) règle les garde-fous de criticité. Builder.
+    pub fn with_risk_config(mut self, cfg: RiskConfig) -> Self {
+        self.risk_cfg = cfg;
+        self
+    }
+
+    /// (§D) seuil de routage par criticité pour l'améliorateur de substrat.
+    pub fn with_route_threshold(mut self, threshold: f64) -> Self {
+        self.route_threshold = threshold.clamp(0.0, 1.0);
+        self
     }
 
     /// Branche un améliorateur de substrat (Phase 2 : P_eff *mesuré* par une
@@ -143,35 +188,82 @@ impl RSIAgent {
         self.surface.si_global(&self.state, &self.substrate)
     }
 
-    /// Un pas de la boucle discrète RSI.
+    /// Un pas de la boucle discrète RSI (avec criticité §7 et optimisations A/C/D).
     pub fn step(&mut self) -> StepReport {
         let si_before = self.si_global();
+        let pre_bottleneck = self.surface.bottleneck(&self.state, &self.substrate);
 
-        // 1) méta-révision : ℳ_{t+1} = argmax_ℳ SI_global(ℳ(S_t))
-        let (best_strategy, _proj_si) =
-            self.meta
-                .revise(&self.strategy, &self.state, &self.substrate, &self.surface);
-        self.strategy = best_strategy;
+        // §A — warm-start mémoire : rappeler les contextes proches et réinjecter
+        // les stratégies ℳ passées performantes comme graines.
+        if self.memory.is_some() {
+            let query = self.state_embedding();
+            let n_o = self.substrate.o.len();
+            let recalled = self.memory.as_ref().unwrap().recall(&query, self.recall_k);
+            let seeds: Vec<MetaStrategy> = recalled
+                .iter()
+                .filter_map(|p| decode_strategy_payload(p).map(|(_, s)| s))
+                .filter(|s| s.software_edit.len() == n_o)
+                .collect();
+            if !seeds.is_empty() {
+                self.meta.warm_start(&seeds);
+            }
+        }
+
+        // §C — la méta-révision n'est exécutée que tous les `meta_interval` pas.
+        if self.t % self.meta_interval == 0 {
+            let (best_strategy, _proj_si) =
+                self.meta
+                    .revise(&self.strategy, &self.state, &self.substrate, &self.surface);
+            self.strategy = best_strategy;
+        }
+
+        // §7/§D — pré-évaluation de criticité (signaux pré-pas) pour le routage
+        // et le garde-fou conservateur.
+        let pre_signals = RiskSignals {
+            delta_si: 0.0,
+            delta_norm: 0.0,
+            lambda: self.dynamics_cfg.lambda,
+            epsilon: self.dynamics_cfg.epsilon,
+            p_eff: self.substrate.effective_power(),
+            frac_limited_by_substrate: pre_bottleneck.frac_limited_by_substrate,
+            autonomy: mean(&self.state.a),
+            alignment: mean(&self.state.v),
+            backtracks: 0,
+            wireheading: self.substrate.software_eff_gap(),
+            memory_active: self.memory.is_some(),
+        };
+        let pre_risk = self.risk_model.assess(&pre_signals);
+
+        // Garde-fou de criticité : si le RPN max dépasse le seuil, adopter un pas
+        // conservateur en atténuant le gain de la proposition ℳ.
+        let mut active = self.strategy.clone();
+        if pre_risk.max_rpn > self.risk_cfg.rpn_max {
+            active.gain *= 0.5;
+        }
 
         // 2) ℳ(S_t, V_t, H, O) : proposition d'auto-modification (état + logiciel)
-        let (meta_delta, new_substrate) = self.strategy.apply(&self.state, &self.substrate);
+        let (meta_delta, new_substrate) = active.apply(&self.state, &self.substrate);
         let state_after_meta = self.state.add(&meta_delta).clipped(0.0, 1.0);
         let meta_delta_norm = delta_norm(&self.state, &state_after_meta);
 
-        // La réécriture logicielle n'est acceptée que si elle n'abaisse pas P_eff
-        // (garde-fou : l'auto-amélioration du substrat ne doit pas régresser).
+        // La réécriture logicielle n'est acceptée que si elle n'abaisse pas P_eff.
         let mut substrate = if new_substrate.effective_power() >= self.substrate.effective_power() {
             new_substrate
         } else {
             self.substrate.clone()
         };
 
-        // 2bis) amélioration du substrat exécutée (Phase 2 : P_eff mesuré).
-        // Même garde-fou de non-régression de P_eff.
-        if let Some(opt) = self.substrate_opt.as_mut() {
-            let improved = opt.improve(&substrate);
-            if improved.effective_power() >= substrate.effective_power() {
-                substrate = improved;
+        // §D — routage par criticité : l'améliorateur de substrat (coûteux) n'est
+        // invoqué que lorsque le substrat est la contrainte qui bride réellement
+        // (goulot substrat élevé OU mode critique = effondrement du substrat).
+        let substrate_is_critical = pre_bottleneck.frac_limited_by_substrate >= self.route_threshold
+            || pre_risk.most_critical == crate::criticality::modes::SUBSTRATE_COLLAPSE;
+        if substrate_is_critical {
+            if let Some(opt) = self.substrate_opt.as_mut() {
+                let improved = opt.improve(&substrate);
+                if improved.effective_power() >= substrate.effective_power() {
+                    substrate = improved;
+                }
             }
         }
 
@@ -185,19 +277,34 @@ impl RSIAgent {
         self.t += 1;
 
         let si_after = self.si_global();
+        let bottleneck = self.surface.bottleneck(&self.state, &self.substrate);
 
-        // 4bis) mémorisation contextuelle (Phase 3 : composante C réelle)
+        // §7 — évaluation de criticité post-pas (signaux réalisés)
+        let signals = RiskSignals {
+            delta_si: si_after - si_before,
+            delta_norm: appr.delta_norm,
+            lambda: self.dynamics_cfg.lambda,
+            epsilon: self.dynamics_cfg.epsilon,
+            p_eff: self.substrate.effective_power(),
+            frac_limited_by_substrate: bottleneck.frac_limited_by_substrate,
+            autonomy: mean(&self.state.a),
+            alignment: mean(&self.state.v),
+            backtracks: appr.backtracks,
+            wireheading: self.substrate.software_eff_gap(),
+            memory_active: self.memory.is_some(),
+        };
+        let risk = self.risk_model.assess(&signals);
+        let si_safe = self.risk_model.si_safe(si_after, &risk, self.risk_cfg.kappa);
+
+        // §A — mémorisation : embedding de l'état + stratégie gagnante (pour le
+        // warm-start des pas futurs).
         if self.memory.is_some() {
             let embedding = self.state_embedding();
-            let payload = format!("t={};si={:.6};p_eff={:.6}", self.t, si_after,
-                                  self.substrate.effective_power())
-                .into_bytes();
+            let payload = encode_strategy_payload(si_after, &self.strategy);
             if let Some(mem) = self.memory.as_mut() {
                 mem.remember(&embedding, &payload);
             }
         }
-
-        let bottleneck = self.surface.bottleneck(&self.state, &self.substrate);
 
         StepReport {
             t: self.t,
@@ -209,6 +316,10 @@ impl RSIAgent {
             appr,
             frac_limited_by_substrate: bottleneck.frac_limited_by_substrate,
             capabilities: self.state.capability_array(),
+            risk_global: risk.risk_global,
+            max_rpn: risk.max_rpn,
+            most_critical: risk.most_critical,
+            si_safe,
         }
     }
 
@@ -262,5 +373,37 @@ mod tests {
         let recalled = agent.recall_similar(3);
         assert_eq!(recalled.len(), 3);
         assert!(recalled.iter().all(|p| !p.is_empty()));
+    }
+
+    #[test]
+    fn reports_criticality_fields() {
+        let mut agent = RSIAgent::demo(2026);
+        for r in agent.run(40) {
+            assert!((0.0..=1.0).contains(&r.risk_global), "risk={}", r.risk_global);
+            assert!((0.0..=1.0).contains(&r.max_rpn));
+            assert!(r.si_safe <= r.si_global + 1e-12); // SI_safe pénalise le risque
+            assert!(!r.most_critical.is_empty());
+        }
+    }
+
+    #[test]
+    fn memory_warm_start_still_improves() {
+        use crate::memory::LinearContextMemory;
+        let mut agent = RSIAgent::demo(11).with_memory(Box::new(LinearContextMemory::new()));
+        let start = agent.si_global();
+        agent.run(60);
+        assert!(agent.si_global() > start);
+        // les payloads mémoire encodent des stratégies décodables (§A)
+        let recalled = agent.recall_similar(1);
+        assert!(crate::meta::decode_strategy_payload(&recalled[0]).is_some());
+    }
+
+    #[test]
+    fn meta_interval_keeps_invariants() {
+        let mut agent = RSIAgent::demo(7).with_meta_interval(5);
+        let eps = agent.dynamics_cfg.epsilon;
+        for r in agent.run(40) {
+            assert!(r.appr.si_after >= r.appr.si_before - eps - 1e-9);
+        }
     }
 }

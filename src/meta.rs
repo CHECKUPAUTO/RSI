@@ -157,6 +157,45 @@ pub trait MetaSearch {
         substrate: &Substrate,
         surface: &IntelligenceSurface,
     ) -> (MetaStrategy, f64);
+
+    /// Réinjecte des stratégies passées performantes (rappel mémoire, §A)
+    /// comme graines de la prochaine révision. No-op par défaut.
+    fn warm_start(&mut self, _seeds: &[MetaStrategy]) {}
+}
+
+/// Encode une stratégie + son SI dans un payload mémoire compact (binaire,
+/// little-endian) : `[ si:f64 | n_sw:u32 | θ:f64×(7+n_sw) ]`. Permet à la
+/// mémoire contextuelle `C` de mémoriser quelle politique ℳ a marché.
+pub fn encode_strategy_payload(si: f64, strategy: &MetaStrategy) -> Vec<u8> {
+    let theta = strategy.encode();
+    let n_sw = strategy.software_edit.len() as u32;
+    let mut out = Vec::with_capacity(8 + 4 + theta.len() * 8);
+    out.extend_from_slice(&si.to_le_bytes());
+    out.extend_from_slice(&n_sw.to_le_bytes());
+    for v in &theta {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out
+}
+
+/// Décode un payload produit par [`encode_strategy_payload`]. Renvoie
+/// `(si, stratégie)` ou `None` si le format est invalide.
+pub fn decode_strategy_payload(bytes: &[u8]) -> Option<(f64, MetaStrategy)> {
+    if bytes.len() < 12 {
+        return None;
+    }
+    let si = f64::from_le_bytes(bytes[0..8].try_into().ok()?);
+    let n_sw = u32::from_le_bytes(bytes[8..12].try_into().ok()?) as usize;
+    let dim = 7 + n_sw;
+    if bytes.len() != 12 + dim * 8 {
+        return None;
+    }
+    let mut theta = Vec::with_capacity(dim);
+    for i in 0..dim {
+        let off = 12 + i * 8;
+        theta.push(f64::from_le_bytes(bytes[off..off + 8].try_into().ok()?));
+    }
+    Some((si, MetaStrategy::decode(&theta, n_sw)))
 }
 
 /// Méta-optimiseur par **recherche aléatoire de voisinage**.
@@ -167,11 +206,13 @@ pub struct MetaOptimizer {
     pub candidates: usize,
     pub explore_scale: f64,
     rng: Rng,
+    /// graines réinjectées par la mémoire (§A), consommées au prochain `revise`.
+    seeds: Vec<MetaStrategy>,
 }
 
 impl MetaOptimizer {
     pub fn new(candidates: usize, explore_scale: f64, seed: u64) -> Self {
-        MetaOptimizer { candidates, explore_scale, rng: Rng::new(seed) }
+        MetaOptimizer { candidates, explore_scale, rng: Rng::new(seed), seeds: Vec::new() }
     }
 }
 
@@ -186,6 +227,15 @@ impl MetaSearch for MetaOptimizer {
         let mut best = current.clone();
         let mut best_si = current.projected_si(state, substrate, surface);
 
+        // graines mémoire (§A) : évalue d'abord les stratégies passées rappelées
+        for seed in self.seeds.drain(..).collect::<Vec<_>>() {
+            let si = seed.projected_si(state, substrate, surface);
+            if si > best_si {
+                best = seed;
+                best_si = si;
+            }
+        }
+
         for _ in 0..self.candidates {
             let cand = current.perturb(&mut self.rng, self.explore_scale);
             let si = cand.projected_si(state, substrate, surface);
@@ -195,6 +245,10 @@ impl MetaSearch for MetaOptimizer {
             }
         }
         (best, best_si)
+    }
+
+    fn warm_start(&mut self, seeds: &[MetaStrategy]) {
+        self.seeds = seeds.to_vec();
     }
 }
 
@@ -210,11 +264,13 @@ pub struct CmaEsMeta {
     pub sigma0: f64,
     seed: u64,
     counter: u64,
+    /// graines réinjectées par la mémoire (§A).
+    seeds: Vec<MetaStrategy>,
 }
 
 impl CmaEsMeta {
     pub fn new(population: usize, generations: usize, sigma0: f64, seed: u64) -> Self {
-        CmaEsMeta { population, generations, sigma0, seed, counter: 0 }
+        CmaEsMeta { population, generations, sigma0, seed, counter: 0, seeds: Vec::new() }
     }
 }
 
@@ -233,21 +289,39 @@ impl MetaSearch for CmaEsMeta {
         let seed = self.seed ^ self.counter.wrapping_mul(0x9E37_79B9_7F4A_7C15);
         self.counter = self.counter.wrapping_add(1);
 
+        // §A : centre l'optimisation sur la meilleure graine mémoire si elle
+        // bat la stratégie courante (warm-start CMA-ES).
+        let cur_si = current.projected_si(state, substrate, surface);
+        let mut center = current.clone();
+        let mut center_si = cur_si;
+        for seed_strat in self.seeds.drain(..).collect::<Vec<_>>() {
+            let si = seed_strat.projected_si(state, substrate, surface);
+            if si > center_si {
+                center = seed_strat;
+                center_si = si;
+            }
+        }
+
         let mut cma = SepCmaEs::new(dim, self.population, seed);
-        let mean0 = current.encode();
+        let mean0 = center.encode();
         let objective = |theta: &[f64]| -> f64 {
             MetaStrategy::decode(theta, n_sw).projected_si(state, substrate, surface)
         };
         let (best_theta, best_si) =
             cma.optimize(&mean0, self.sigma0, self.generations, objective);
 
-        // garde-fou : ne jamais faire pire que la stratégie courante
-        let cur_si = current.projected_si(state, substrate, surface);
-        if best_si >= cur_si {
+        // garde-fou : ne jamais faire pire que la stratégie courante / la graine
+        let baseline_si = cur_si.max(center_si);
+        let baseline = if center_si > cur_si { center } else { current.clone() };
+        if best_si >= baseline_si {
             (MetaStrategy::decode(&best_theta, n_sw), best_si)
         } else {
-            (current.clone(), cur_si)
+            (baseline, baseline_si)
         }
+    }
+
+    fn warm_start(&mut self, seeds: &[MetaStrategy]) {
+        self.seeds = seeds.to_vec();
     }
 }
 
