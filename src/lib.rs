@@ -44,6 +44,8 @@
 pub mod agent;
 pub mod api;
 pub mod cma;
+#[cfg(feature = "forge")]
+pub mod forge_meta;
 pub mod dynamics;
 pub mod json;
 pub mod linalg;
@@ -57,6 +59,8 @@ pub mod surface;
 pub use agent::{RSIAgent, StepReport};
 pub use api::{ApiResult, RsiApi};
 pub use cma::SepCmaEs;
+#[cfg(feature = "forge")]
+pub use forge_meta::ForgeMetaSearch;
 pub use dynamics::{Dynamics, StabilityConfig, StepInfo};
 pub use json::Json;
 pub use meta::{CmaEsMeta, MetaOptimizer, MetaSearch, MetaStrategy};

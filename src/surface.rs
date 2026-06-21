@@ -33,7 +33,10 @@ use crate::substrate::Substrate;
 ///
 /// Reçoit le profil de besoins d'une tâche (`task`, 6 poids sur D,M,R,A,C,V)
 /// et les niveaux de capacité courants de l'agent (`caps`).
-pub trait CapabilityModel: Debug {
+///
+/// `Send + Sync` est requis pour permettre l'évaluation parallèle de la
+/// surface (p. ex. par un méta-optimiseur externe comme Forge).
+pub trait CapabilityModel: Debug + Send + Sync {
     fn phi(&self, task: &[f64; 6], caps: &[f64; 6]) -> f64;
     /// Support du `Clone` pour les objets-traits (pattern clone_box).
     fn clone_box(&self) -> Box<dyn CapabilityModel>;
@@ -43,7 +46,7 @@ pub trait CapabilityModel: Debug {
 ///
 /// Reçoit l'efficacité du substrat `p_eff` et l'exigence calculatoire
 /// normalisée `demand ∈ [0,1]` de la tâche.
-pub trait CeilingModel: Debug {
+pub trait CeilingModel: Debug + Send + Sync {
     fn g(&self, p_eff: f64, demand: f64) -> f64;
     fn clone_box(&self) -> Box<dyn CeilingModel>;
 }

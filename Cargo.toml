@@ -10,6 +10,17 @@ authors = ["RSI"]
 name = "rsi"
 path = "src/lib.rs"
 
+# Le cœur reste sans dépendance ; les backends réels sont optionnels.
+[features]
+default = []
+# Méta-optimiseur ℳ adossé au moteur évolutionnaire Forge (exécution réelle).
+forge = ["dep:forge-core", "dep:rand", "dep:serde"]
+
+[dependencies]
+forge-core = { git = "https://github.com/CHECKUPAUTO/forge", optional = true }
+rand = { version = "0.8", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+
 [[bin]]
 name = "rsi-demo"
 path = "src/main.rs"

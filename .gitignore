@@ -1,3 +1,7 @@
 /target
 Cargo.lock
 **/*.rs.bk
+
+# artefacts Forge (checkpoints sled)
+forge_checkpoint.json
+*.sled

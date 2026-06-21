@@ -1,7 +1,21 @@
 # Étude de faisabilité — intégrer CCOS, OctaSoma, PAPERS-AGENT et Forge pour booster le moteur RSI
 
-> Statut : **étude** (aucune ligne de RSI modifiée). Objectif : déterminer
-> quoi réutiliser, comment le câbler, et dans quel ordre.
+> Statut : **étude + Phase 1 implémentée**. Objectif : déterminer quoi
+> réutiliser, comment le câbler, et dans quel ordre.
+>
+> ✅ **Phase 1 livrée** — `ForgeMetaSearch` (feature `forge`) : la méta-révision
+> `ℳ` est désormais une recherche évolutionnaire *exécutée* par `forge-core`
+> dont la fitness est `SI_global`. Cœur RSI inchangé (sans dépendance par
+> défaut). Démo : SI_global 0.138 → 0.443 (+220 %) en 40 pas.
+>
+> ```bash
+> cargo build --features forge      # active le méta-optimiseur Forge
+> cargo test  --features forge      # 35 tests lib (dont l'adaptateur)
+> ```
+> ```rust
+> let meta = Box::new(rsi::ForgeMetaSearch::new(8, 24, 0.15, 42));
+> let agent = rsi::RSIAgent::new(state, substrate, surface, cfg, meta);
+> ```
 
 ## 1. Résumé exécutif
 
@@ -103,7 +117,7 @@ pub trait SubstrateEvaluator {
 
 | Phase | Contenu | Dépôt | Risque | Valeur |
 |-------|---------|-------|--------|--------|
-| **1** | Trait `MetaSearch` adossé à `forge-core` (Domain dont la fitness = `SI_global`) ; `ℳ` devient exécuté | Forge | faible–moyen | ★★★ |
+| **1** ✅ | `ForgeMetaSearch` : `forge-core` Domain dont la fitness = `SI_global` ; `ℳ` exécuté (**fait**) | Forge | faible–moyen | ★★★ |
 | **2** | Trait `SubstrateEvaluator` → `P_eff` mesuré par une campagne Forge (GEMM/SIMD) | Forge | moyen (toolchain runtime) | ★★★ |
 | **3** | Trait `ContextMemory` → OctaSoma comme backend réel de `C` | OctaSoma | faible | ★★ |
 | **4** | Audit déterministe de `C`/`ℳ` (journal hash-chaîné, replay) | CCOS | moyen (licence) | ★★ |

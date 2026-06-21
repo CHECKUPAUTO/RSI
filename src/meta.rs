@@ -103,7 +103,7 @@ impl MetaStrategy {
     }
 
     /// SI_global projeté si l'on applique cette stratégie à (state, substrate).
-    fn projected_si(
+    pub(crate) fn projected_si(
         &self,
         state: &CognitiveState,
         substrate: &Substrate,
@@ -118,7 +118,7 @@ impl MetaStrategy {
 
     /// Encode la stratégie en un vecteur ℝ^(7+n) *non contraint* :
     /// `[ ln(focus)×6, logit(gain), software_edit×n ]`.
-    fn encode(&self) -> Vec<f64> {
+    pub(crate) fn encode(&self) -> Vec<f64> {
         let mut theta = Vec::with_capacity(7 + self.software_edit.len());
         for &f in &self.focus {
             theta.push(f.max(1e-6).ln());
@@ -132,7 +132,7 @@ impl MetaStrategy {
 
     /// Décode un vecteur non contraint en stratégie valide :
     /// `focus = softmax(·)`, `gain = GAIN_LO + (GAIN_HI−GAIN_LO)·σ(·)`.
-    fn decode(theta: &[f64], n_software: usize) -> MetaStrategy {
+    pub(crate) fn decode(theta: &[f64], n_software: usize) -> MetaStrategy {
         let max = theta[0..6].iter().cloned().fold(f64::MIN, f64::max);
         let exps: [f64; 6] = std::array::from_fn(|i| (theta[i] - max).exp());
         let sum: f64 = exps.iter().sum::<f64>().max(1e-12);
