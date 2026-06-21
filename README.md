@@ -14,6 +14,22 @@ SI_global : 0.1385 → 0.6760   (+388 %)   en 120 pas
 goulot : cognitif (0 %) ──────────────► substrat (100 %)
 ```
 
+## 🚀 Installation en une commande
+
+Connecte RSI à ton agent IA (openclaw, hermes-agent, ou tout client MCP) —
+aucune configuration manuelle :
+
+```bash
+git clone https://github.com/CHECKUPAUTO/RSI && cd RSI && ./install.sh
+```
+
+C'est tout. `install.sh` compile le serveur MCP et l'enregistre auprès de tes
+agents. Au prochain démarrage, ils disposent des outils `rsi_*` (`rsi_create`,
+`rsi_run`, `rsi_state`, …). Équivalent : `make install`.
+
+> Pas d'agent sous la main ? Teste le moteur directement :
+> `cargo run --release --bin rsi-demo`
+
 ## Correspondance équations ↔ code
 
 | Section | Équation | Module |
