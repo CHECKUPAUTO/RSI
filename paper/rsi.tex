@@ -167,6 +167,27 @@ self-rewrite limited to $O$ (future: $A,B,C,H$); Monte-Carlo noise interacts
 with small $\varepsilon$; the attractor analysis is empirical and a formal
 characterization is open.
 
+\section{Failure modes and criticality (FMECA)}
+Recursive self-improvement \emph{amplifies} failures, so the pointwise
+safeguards of \S2.4 are not enough: we add an explicit theory of failure modes,
+their criticality, and a risk-adjusted objective. For each mode $f$ we score
+severity $S_f$, occurrence $O_f$ (a function of live signals), and detection
+difficulty $D_f$ in $[0,1]$, and form the Risk Priority Number
+$\mathrm{RPN}_f = S_f\,O_f\,D_f$. Principal modes (occurrence; detector):
+competence regression ($-\Delta\SI/\varepsilon$; $\varepsilon$-guard),
+instability ($\lVert\Delta S\rVert/\lambda$; $\lambda$-guard), value drift
+($A-V$), substrate collapse ($(1-\Peff)\cdot\text{frac}$; bottleneck), Goodhart
+(backtracks; line search), memory poisoning (CCOS), wireheading
+($\max(0,\text{measured}-\text{analytic})$; Forge \texttt{verify}). Aggregating,
+$\mathrm{Risk}=\overline{\mathrm{RPN}_f}$ and the risk-adjusted intelligence is
+$\mathrm{SI}_{\text{safe}} = \SI - \kappa\,\mathrm{Risk}$. The meta-revision optimizes
+$\mathrm{SI}_{\text{safe}}$ under a criticality safeguard $\max_f \mathrm{RPN}_f <
+\mathrm{RPN}_{\max}$ (else a conservative step damps $\mathcal{M}$). The
+$\lambda/\varepsilon$ safeguards are special cases, so FMECA subsumes and
+generalizes \S2.4; the most-critical mode drives \emph{criticality routing}
+(generalizing bottleneck routing). CCOS (hash-chained log + replay) is the
+detector/forensics layer for the hardest modes.
+
 \section{Conclusion}
 A compact, executable geometric model of RSI in which the competence surface
 deforms under learning, a multiplicative substrate, and a recursive

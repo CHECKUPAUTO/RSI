@@ -44,6 +44,7 @@
 pub mod agent;
 pub mod api;
 pub mod cma;
+pub mod criticality;
 #[cfg(feature = "forge")]
 pub mod forge_meta;
 #[cfg(feature = "forge")]
@@ -64,6 +65,7 @@ pub mod surface;
 pub use agent::{RSIAgent, StepReport};
 pub use api::{ApiResult, RsiApi};
 pub use cma::SepCmaEs;
+pub use criticality::{RiskConfig, RiskModel, RiskReport, RiskSignals};
 #[cfg(feature = "forge")]
 pub use forge_meta::ForgeMetaSearch;
 #[cfg(feature = "forge")]

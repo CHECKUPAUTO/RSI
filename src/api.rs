@@ -296,6 +296,10 @@ fn step_report_json(r: &StepReport) -> Json {
         .set("state_norm", Json::Num(r.state_norm))
         .set("meta_delta_norm", Json::Num(r.meta_delta_norm))
         .set("frac_limited_by_substrate", Json::Num(r.frac_limited_by_substrate))
+        .set("risk_global", Json::Num(r.risk_global))
+        .set("max_rpn", Json::Num(r.max_rpn))
+        .set("most_critical", Json::Str(r.most_critical.to_string()))
+        .set("si_safe", Json::Num(r.si_safe))
         .set("appr", appr)
         .set("capabilities", capabilities_json(&r.capabilities));
     out

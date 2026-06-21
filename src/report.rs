@@ -14,13 +14,13 @@ pub fn to_csv(reports: &[StepReport]) -> String {
     s.push_str(
         "t,si_global,delta_si,p_eff,state_norm,meta_delta_norm,\
 appr_si_before,appr_si_after,appr_delta_norm,clamped_to_lambda,backtracks,step_factor,\
-frac_limited_by_substrate,D,M,R,A,C,V\n",
+frac_limited_by_substrate,risk_global,max_rpn,most_critical,si_safe,D,M,R,A,C,V\n",
     );
     for r in reports {
         s.push_str(&format!(
             "{},{:.6},{:.6},{:.6},{:.6},{:.6},\
 {:.6},{:.6},{:.6},{},{},{:.6},\
-{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+{:.6},{:.6},{:.6},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
             r.t,
             r.si_global,
             r.delta_si,
@@ -34,6 +34,10 @@ frac_limited_by_substrate,D,M,R,A,C,V\n",
             r.appr.backtracks,
             r.appr.step_factor,
             r.frac_limited_by_substrate,
+            r.risk_global,
+            r.max_rpn,
+            r.most_critical,
+            r.si_safe,
             r.capabilities[0],
             r.capabilities[1],
             r.capabilities[2],
@@ -56,6 +60,7 @@ pub fn to_json(reports: &[StepReport]) -> String {
 \"appr\":{{\"si_before\":{:.6},\"si_after\":{:.6},\"delta_norm\":{:.6},\
 \"clamped_to_lambda\":{},\"backtracks\":{},\"step_factor\":{:.6}}},\
 \"frac_limited_by_substrate\":{:.6},\
+\"risk_global\":{:.6},\"max_rpn\":{:.6},\"most_critical\":{:?},\"si_safe\":{:.6},\
 \"capabilities\":{{\"D\":{:.6},\"M\":{:.6},\"R\":{:.6},\"A\":{:.6},\"C\":{:.6},\"V\":{:.6}}}}}{}\n",
             r.t,
             r.si_global,
@@ -70,6 +75,10 @@ pub fn to_json(reports: &[StepReport]) -> String {
             r.appr.backtracks,
             r.appr.step_factor,
             r.frac_limited_by_substrate,
+            r.risk_global,
+            r.max_rpn,
+            r.most_critical,
+            r.si_safe,
             r.capabilities[0],
             r.capabilities[1],
             r.capabilities[2],
@@ -106,7 +115,11 @@ mod tests {
         let lines: Vec<&str> = csv.lines().collect();
         assert_eq!(lines.len(), 11); // 1 en-tête + 10 pas
         assert!(lines[0].starts_with("t,si_global"));
-        assert_eq!(lines[1].split(',').count(), 19);
+        // 19 colonnes d'origine + 4 de criticité (risk_global, max_rpn,
+        // most_critical, si_safe) = 23
+        let header_cols = lines[0].split(',').count();
+        assert_eq!(header_cols, 23);
+        assert_eq!(lines[1].split(',').count(), header_cols);
     }
 
     #[test]
