@@ -3,18 +3,29 @@
 > Statut : **étude + Phase 1 implémentée**. Objectif : déterminer quoi
 > réutiliser, comment le câbler, et dans quel ordre.
 >
-> ✅ **Phase 1 livrée** — `ForgeMetaSearch` (feature `forge`) : la méta-révision
-> `ℳ` est désormais une recherche évolutionnaire *exécutée* par `forge-core`
-> dont la fitness est `SI_global`. Cœur RSI inchangé (sans dépendance par
-> défaut). Démo : SI_global 0.138 → 0.443 (+220 %) en 40 pas.
+> ✅ **Phases 1–3 livrées** — backends réels derrière des features Cargo
+> optionnelles ; le cœur RSI reste sans dépendance par défaut.
+>
+> - **Phase 1** `forge` — `ForgeMetaSearch` : la méta-révision `ℳ` devient une
+>   recherche évolutionnaire *exécutée* (`forge-core`) dont la fitness est
+>   `SI_global`. Démo : SI_global 0.138 → 0.443 (+220 %).
+> - **Phase 2** `forge` — `ForgeSubstrate` (trait `SubstrateImprover`) : la
+>   composante logicielle de `P_eff` est *mesurée* par une campagne Forge sur un
+>   vrai kernel matriciel. Démo : efficience 0.594 → 0.742, P_eff monotone ↑.
+> - **Phase 3** `octasoma` — `OctaSomaMemory` (trait `ContextMemory`) : la
+>   composante `C` dispose d'un vrai magasin vectoriel (k-NN fractal) ;
+>   l'agent y écrit son état à chaque pas et peut rappeler les contextes proches.
 >
 > ```bash
-> cargo build --features forge      # active le méta-optimiseur Forge
-> cargo test  --features forge      # 35 tests lib (dont l'adaptateur)
+> cargo build --features forge              # ℳ + P_eff réels
+> cargo build --features octasoma           # mémoire C réelle
+> cargo test  --features "forge octasoma"   # 41 tests lib
 > ```
 > ```rust
-> let meta = Box::new(rsi::ForgeMetaSearch::new(8, 24, 0.15, 42));
-> let agent = rsi::RSIAgent::new(state, substrate, surface, cfg, meta);
+> let agent = rsi::RSIAgent::new(state, substrate, surface, cfg,
+>         Box::new(rsi::ForgeMetaSearch::new(8, 24, 0.15, 42)))   // Phase 1
+>     .with_substrate_improver(Box::new(rsi::ForgeSubstrate::new(160, 2, 6, 7))) // Phase 2
+>     .with_memory(Box::new(rsi::OctaSomaMemory::new(state_dim, 1)));            // Phase 3
 > ```
 
 ## 1. Résumé exécutif
@@ -118,8 +129,8 @@ pub trait SubstrateEvaluator {
 | Phase | Contenu | Dépôt | Risque | Valeur |
 |-------|---------|-------|--------|--------|
 | **1** ✅ | `ForgeMetaSearch` : `forge-core` Domain dont la fitness = `SI_global` ; `ℳ` exécuté (**fait**) | Forge | faible–moyen | ★★★ |
-| **2** | Trait `SubstrateEvaluator` → `P_eff` mesuré par une campagne Forge (GEMM/SIMD) | Forge | moyen (toolchain runtime) | ★★★ |
-| **3** | Trait `ContextMemory` → OctaSoma comme backend réel de `C` | OctaSoma | faible | ★★ |
+| **2** ✅ | `ForgeSubstrate` + trait `SubstrateImprover` → `P_eff` mesuré par campagne Forge sur kernel matriciel (**fait**) | Forge | moyen | ★★★ |
+| **3** ✅ | `OctaSomaMemory` + trait `ContextMemory` → mémoire `C` réelle (k-NN fractal) (**fait**) | OctaSoma | faible | ★★ |
 | **4** | Audit déterministe de `C`/`ℳ` (journal hash-chaîné, replay) | CCOS | moyen (licence) | ★★ |
 | **5** | Ingestion `D` depuis papiers (sous-processus CLI `papers`) | PAPERS | élevé | ★ |
 

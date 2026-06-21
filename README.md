@@ -113,13 +113,16 @@ Chaque [`StepReport`](src/agent.rs) expose :
 - **Serveur MCP** (`rsi-mcp`) pour piloter le système depuis un agent IA / LLM.
 - **Auto-connexion** (`rsi-connect` + `scripts/auto-connect.sh`) aux runtimes
   d'agents (openclaw, hermes-agent, …) sans intervention humaine.
-- **Méta-optimiseur Forge** (feature optionnelle `forge`) : la méta-révision
-  `ℳ` devient une recherche évolutionnaire *exécutée* (moteur `forge-core`)
-  dont la fitness est `SI_global`. Cœur RSI inchangé et sans dépendance par
-  défaut. Voir l'étude d'intégration : [`docs/INTEGRATION_STUDY.md`](docs/INTEGRATION_STUDY.md).
+- **Backends réels** (features optionnelles, cœur sans dépendance par défaut) —
+  voir l'étude : [`docs/INTEGRATION_STUDY.md`](docs/INTEGRATION_STUDY.md) :
+  - `forge` — `ℳ` réel (recherche évolutionnaire exécutée, fitness `SI_global`)
+    **et** `P_eff` réel (efficience logicielle mesurée sur un vrai kernel) ;
+  - `octasoma` — composante `C` réelle (mémoire vectorielle fractale, k-NN).
 
   ```bash
-  cargo build --features forge      # branche le méta-optimiseur Forge
+  cargo build --features forge              # ℳ + P_eff réels (Forge)
+  cargo build --features octasoma           # mémoire C réelle (OctaSoma)
+  cargo build --features "forge octasoma"   # tout
   ```
 
 ### Intégration agent IA / LLM

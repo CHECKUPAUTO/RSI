@@ -16,6 +16,7 @@
 //! résumé scalaire (volume sous Σ_I), suivi à chaque pas.
 
 use crate::dynamics::{Dynamics, StabilityConfig, StepInfo};
+use crate::memory::ContextMemory;
 use crate::meta::{CmaEsMeta, MetaOptimizer, MetaSearch, MetaStrategy};
 use crate::state::{delta_norm, CognitiveState, Dims};
 use crate::substrate::{Substrate, SubstrateImprover};
@@ -50,6 +51,9 @@ pub struct RSIAgent {
     /// Améliorateur de substrat optionnel (Phase 2 — P_eff *mesuré*). `None`
     /// par défaut → boucle d'origine inchangée.
     pub substrate_opt: Option<Box<dyn SubstrateImprover>>,
+    /// Mémoire contextuelle optionnelle (Phase 3 — composante `C` réelle).
+    /// Quand présente, l'agent y écrit son état à chaque pas.
+    pub memory: Option<Box<dyn ContextMemory>>,
     pub t: usize,
 }
 
@@ -71,6 +75,7 @@ impl RSIAgent {
             dynamics_cfg,
             meta,
             substrate_opt: None,
+            memory: None,
             t: 0,
         }
     }
@@ -80,6 +85,32 @@ impl RSIAgent {
     pub fn with_substrate_improver(mut self, improver: Box<dyn SubstrateImprover>) -> Self {
         self.substrate_opt = Some(improver);
         self
+    }
+
+    /// Branche une mémoire contextuelle (Phase 3 : composante `C` réelle, p. ex.
+    /// OctaSoma). L'agent y écrit son état à chaque pas. Builder fluide.
+    pub fn with_memory(mut self, memory: Box<dyn ContextMemory>) -> Self {
+        self.memory = Some(memory);
+        self
+    }
+
+    /// Embedding de l'état courant (vecteur d'état aplati en f32).
+    fn state_embedding(&self) -> Vec<f32> {
+        self.state.to_vector().iter().map(|&x| x as f32).collect()
+    }
+
+    /// Rappelle les `k` contextes passés les plus proches de l'état courant.
+    /// Vide si aucune mémoire n'est branchée.
+    pub fn recall_similar(&self, k: usize) -> Vec<Vec<u8>> {
+        match &self.memory {
+            Some(mem) => mem.recall(&self.state_embedding(), k),
+            None => Vec::new(),
+        }
+    }
+
+    /// Nombre de contextes mémorisés (0 sans mémoire).
+    pub fn memory_len(&self) -> usize {
+        self.memory.as_ref().map(|m| m.len()).unwrap_or(0)
     }
 
     /// Sous-systèmes communs d'un agent de démonstration (reproductible).
@@ -154,6 +185,18 @@ impl RSIAgent {
         self.t += 1;
 
         let si_after = self.si_global();
+
+        // 4bis) mémorisation contextuelle (Phase 3 : composante C réelle)
+        if self.memory.is_some() {
+            let embedding = self.state_embedding();
+            let payload = format!("t={};si={:.6};p_eff={:.6}", self.t, si_after,
+                                  self.substrate.effective_power())
+                .into_bytes();
+            if let Some(mem) = self.memory.as_mut() {
+                mem.remember(&embedding, &payload);
+            }
+        }
+
         let bottleneck = self.surface.bottleneck(&self.state, &self.substrate);
 
         StepReport {
@@ -206,5 +249,18 @@ mod tests {
         for r in agent.run(50) {
             assert!(r.appr.delta_norm <= lam + 1e-9);
         }
+    }
+
+    #[test]
+    fn memory_records_each_step() {
+        use crate::memory::LinearContextMemory;
+        let mut agent = RSIAgent::demo(3).with_memory(Box::new(LinearContextMemory::new()));
+        assert_eq!(agent.memory_len(), 0);
+        agent.run(10);
+        assert_eq!(agent.memory_len(), 10);
+        // le rappel renvoie des contextes (payloads non vides)
+        let recalled = agent.recall_similar(3);
+        assert_eq!(recalled.len(), 3);
+        assert!(recalled.iter().all(|p| !p.is_empty()));
     }
 }

@@ -51,7 +51,10 @@ pub mod forge_substrate;
 pub mod dynamics;
 pub mod json;
 pub mod linalg;
+pub mod memory;
 pub mod meta;
+#[cfg(feature = "octasoma")]
+pub mod octasoma_memory;
 pub mod report;
 pub mod rng;
 pub mod state;
@@ -67,6 +70,9 @@ pub use forge_meta::ForgeMetaSearch;
 pub use forge_substrate::ForgeSubstrate;
 pub use dynamics::{Dynamics, StabilityConfig, StepInfo};
 pub use json::Json;
+pub use memory::{ContextMemory, LinearContextMemory};
+#[cfg(feature = "octasoma")]
+pub use octasoma_memory::OctaSomaMemory;
 pub use meta::{CmaEsMeta, MetaOptimizer, MetaSearch, MetaStrategy};
 pub use rng::Rng;
 pub use state::{CognitiveState, Dims};
