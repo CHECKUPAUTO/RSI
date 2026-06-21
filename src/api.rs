@@ -31,6 +31,32 @@ use crate::{report, surface};
 /// Résultat d'une commande : un JSON, ou un message d'erreur.
 pub type ApiResult = Result<Json, String>;
 
+// ---------------------------------------------------------------------- //
+// Limites de ressources (durcissement anti-DoS pour entrées non fiables)
+// ---------------------------------------------------------------------- //
+/// Nombre maximal de sessions simultanées.
+const MAX_SESSIONS: usize = 64;
+/// Taille maximale de l'échantillon de tâches |Ω|.
+const MAX_TASKS: usize = 50_000;
+/// Dimension maximale d'une composante de S.
+const MAX_DIM: usize = 1_024;
+/// Dimension maximale des vecteurs substrat H / O (matrices n×n).
+const MAX_SUBSTRATE: usize = 256;
+/// Nombre maximal de pas par appel `run`.
+const MAX_STEPS: usize = 100_000;
+/// Bornes des hyperparamètres d'optimiseur.
+const MAX_CANDIDATES: usize = 10_000;
+const MAX_POPULATION: usize = 4_096;
+const MAX_GENERATIONS: usize = 5_000;
+
+/// Lit un entier de config, applique un plancher et un plafond de sécurité.
+fn bounded(cfg: &Json, key: &str, default: usize, lo: usize, hi: usize) -> usize {
+    cfg.get(key)
+        .and_then(|v| v.as_usize())
+        .unwrap_or(default)
+        .clamp(lo, hi)
+}
+
 struct Session {
     agent: RSIAgent,
     history: Vec<StepReport>,
@@ -74,6 +100,12 @@ impl RsiApi {
 
     fn cmd_create(&mut self, params: &Json) -> ApiResult {
         let id = Self::session_id(params);
+        // garde-fou : plafonne le nombre de sessions (création de nouvelles clés)
+        if !self.sessions.contains_key(&id) && self.sessions.len() >= MAX_SESSIONS {
+            return Err(format!(
+                "limite de {MAX_SESSIONS} sessions atteinte ; supprimez-en ou réutilisez un id"
+            ));
+        }
         let agent = build_agent(params)?;
         let info = snapshot_json(&agent, 0);
         self.sessions.insert(
@@ -119,7 +151,7 @@ impl RsiApi {
 
     fn cmd_run(&mut self, params: &Json) -> ApiResult {
         let id = Self::session_id(params);
-        let steps = params.get("steps").and_then(|v| v.as_usize()).unwrap_or(100);
+        let steps = bounded(params, "steps", 100, 0, MAX_STEPS);
         let s = self.session_mut(&id)?;
 
         let si_start = s.agent.si_global();
@@ -193,10 +225,11 @@ impl RsiApi {
 
 fn build_agent(cfg: &Json) -> Result<RSIAgent, String> {
     let seed = cfg.get("seed").and_then(|v| v.as_u64()).unwrap_or(2026);
-    let dim = cfg.get("dim").and_then(|v| v.as_usize()).unwrap_or(6).max(1);
-    let n_tasks = cfg.get("n_tasks").and_then(|v| v.as_usize()).unwrap_or(1024).max(16);
-    let n_hw = cfg.get("n_hardware").and_then(|v| v.as_usize()).unwrap_or(4).max(1);
-    let n_sw = cfg.get("n_software").and_then(|v| v.as_usize()).unwrap_or(4).max(1);
+    // toutes les dimensions sont bornées (plancher utile + plafond anti-DoS)
+    let dim = bounded(cfg, "dim", 6, 1, MAX_DIM);
+    let n_tasks = bounded(cfg, "n_tasks", 1024, 16, MAX_TASKS);
+    let n_hw = bounded(cfg, "n_hardware", 4, 1, MAX_SUBSTRATE);
+    let n_sw = bounded(cfg, "n_software", 4, 1, MAX_SUBSTRATE);
 
     let mut rng = Rng::new(seed);
     let state = CognitiveState::random(Dims::uniform(dim), &mut rng, 0.08);
@@ -226,13 +259,13 @@ fn build_agent(cfg: &Json) -> Result<RSIAgent, String> {
     let optimizer = cfg.get("optimizer").and_then(|v| v.as_str()).unwrap_or("random");
     let meta: Box<dyn MetaSearch> = match optimizer {
         "cma" | "cma-es" | "sep-cma-es" => {
-            let pop = cfg.get("population").and_then(|v| v.as_usize()).unwrap_or(0);
-            let gen = cfg.get("generations").and_then(|v| v.as_usize()).unwrap_or(10);
+            let pop = bounded(cfg, "population", 0, 0, MAX_POPULATION);
+            let gen = bounded(cfg, "generations", 10, 1, MAX_GENERATIONS);
             let sigma0 = cfg.get("sigma0").and_then(|v| v.as_f64()).unwrap_or(0.3);
             Box::new(CmaEsMeta::new(pop, gen, sigma0, seed ^ 0xC3A))
         }
         "random" | "neighborhood" => {
-            let cand = cfg.get("candidates").and_then(|v| v.as_usize()).unwrap_or(48);
+            let cand = bounded(cfg, "candidates", 48, 1, MAX_CANDIDATES);
             let scale = cfg.get("explore_scale").and_then(|v| v.as_f64()).unwrap_or(0.12);
             Box::new(MetaOptimizer::new(cand, scale, seed ^ 0xABCD))
         }
@@ -380,5 +413,36 @@ mod tests {
     fn unknown_command_errors() {
         let mut api = RsiApi::new();
         assert!(api.handle("nope", &Json::obj()).is_err());
+    }
+
+    #[test]
+    fn session_limit_enforced() {
+        let mut api = RsiApi::new();
+        // sessions minuscules pour rester rapide
+        let mk = |id: usize| {
+            let mut c = Json::obj();
+            c.set("id", Json::Str(format!("s{id}")))
+                .set("dim", Json::Num(1.0))
+                .set("n_tasks", Json::Num(16.0));
+            c
+        };
+        for i in 0..MAX_SESSIONS {
+            api.handle("create", &mk(i)).unwrap();
+        }
+        // la (MAX_SESSIONS+1)-ème nouvelle session est refusée
+        assert!(api.handle("create", &mk(MAX_SESSIONS)).is_err());
+        // mais réutiliser un id existant reste autorisé
+        assert!(api.handle("create", &mk(0)).is_ok());
+    }
+
+    #[test]
+    fn oversized_params_are_clamped_not_crashing() {
+        let mut api = RsiApi::new();
+        let mut c = Json::obj();
+        c.set("n_tasks", Json::Num(1e12))
+            .set("dim", Json::Num(1e9))
+            .set("n_hardware", Json::Num(1e9));
+        // ne doit ni paniquer ni épuiser la mémoire : les bornes s'appliquent
+        assert!(api.handle("create", &c).is_ok());
     }
 }

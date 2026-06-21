@@ -187,7 +187,24 @@ fn register_into(path: &Path, name: &str, bin: &str) -> Result<bool, String> {
     let pretty = pretty_print(&root, 0);
     std::fs::write(path, pretty + "\n")
         .map_err(|e| format!("écriture de {} : {e}", path.display()))?;
+
+    // sécurité : restreint l'accès au fichier (lecture/écriture propriétaire)
+    restrict_permissions(path)?;
     Ok(true)
+}
+
+/// Restreint les permissions du fichier de config à `0600` (Unix).
+#[cfg(unix)]
+fn restrict_permissions(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let perms = std::fs::Permissions::from_mode(0o600);
+    std::fs::set_permissions(path, perms)
+        .map_err(|e| format!("set_permissions {} : {e}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn restrict_permissions(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 /// Sérialiseur JSON indenté (lisibilité des fichiers de config).

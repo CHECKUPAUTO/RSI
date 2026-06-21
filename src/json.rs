@@ -124,10 +124,16 @@ impl Json {
 
     // --- parsing -------------------------------------------------------- //
     /// Parse une chaîne JSON.
+    ///
+    /// Sécurité : rejette les entrées dont l'imbrication dépasse
+    /// [`MAX_DEPTH`], ce qui évite tout dépassement de pile sur une entrée
+    /// hostile (le parseur est récursif et traite des données non fiables
+    /// côté serveur MCP).
     pub fn parse(input: &str) -> Result<Json, String> {
         let mut p = Parser {
             chars: input.chars().collect(),
             pos: 0,
+            depth: 0,
         };
         p.skip_ws();
         let v = p.parse_value()?;
@@ -138,6 +144,9 @@ impl Json {
         Ok(v)
     }
 }
+
+/// Profondeur d'imbrication maximale tolérée par le parseur (anti stack-overflow).
+const MAX_DEPTH: usize = 128;
 
 fn write_escaped(s: &str, out: &mut String) {
     out.push('"');
@@ -160,11 +169,20 @@ fn write_escaped(s: &str, out: &mut String) {
 struct Parser {
     chars: Vec<char>,
     pos: usize,
+    depth: usize,
 }
 
 impl Parser {
     fn peek(&self) -> Option<char> {
         self.chars.get(self.pos).copied()
+    }
+
+    fn enter(&mut self) -> Result<(), String> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(format!("imbrication JSON trop profonde (> {MAX_DEPTH})"));
+        }
+        Ok(())
     }
 
     fn next(&mut self) -> Option<char> {
@@ -200,11 +218,13 @@ impl Parser {
     }
 
     fn parse_object(&mut self) -> Result<Json, String> {
+        self.enter()?;
         self.next(); // '{'
         let mut map = BTreeMap::new();
         self.skip_ws();
         if self.peek() == Some('}') {
             self.next();
+            self.depth -= 1;
             return Ok(Json::Obj(map));
         }
         loop {
@@ -223,15 +243,18 @@ impl Parser {
                 _ => return Err(format!("',' ou '}}' attendu à la position {}", self.pos)),
             }
         }
+        self.depth -= 1;
         Ok(Json::Obj(map))
     }
 
     fn parse_array(&mut self) -> Result<Json, String> {
+        self.enter()?;
         self.next(); // '['
         let mut arr = Vec::new();
         self.skip_ws();
         if self.peek() == Some(']') {
             self.next();
+            self.depth -= 1;
             return Ok(Json::Arr(arr));
         }
         loop {
@@ -244,6 +267,7 @@ impl Parser {
                 _ => return Err(format!("',' ou ']' attendu à la position {}", self.pos)),
             }
         }
+        self.depth -= 1;
         Ok(Json::Arr(arr))
     }
 
@@ -360,5 +384,19 @@ mod tests {
     #[test]
     fn rejects_trailing_garbage() {
         assert!(Json::parse("{} extra").is_err());
+    }
+
+    #[test]
+    fn rejects_excessive_nesting() {
+        // entrée hostile : imbrication profonde → refus propre, pas de crash
+        let deep = "[".repeat(10_000);
+        let err = Json::parse(&deep).unwrap_err();
+        assert!(err.contains("profonde"), "msg = {err}");
+    }
+
+    #[test]
+    fn accepts_reasonable_nesting() {
+        let ok = format!("{}{}", "[".repeat(64), "]".repeat(64));
+        assert!(Json::parse(&ok).is_ok());
     }
 }

@@ -150,19 +150,70 @@ Le chemin du binaire MCP est résolu dans l'ordre : `--bin`, puis
 }
 ```
 
-### Déclenchement automatique au démarrage
+### Déclenchement automatique au démarrage (hook SessionStart)
 
-Pour une connexion **réellement sans intervention**, branchez le script sur le
-démarrage de l'environnement :
+Pour une connexion **réellement sans intervention**, branchez le hook léger
+[`scripts/session-start-hook.sh`](../scripts/session-start-hook.sh) sur le
+démarrage de l'environnement. Il ne recompile que si nécessaire, enregistre le
+serveur MCP **en local** (stdio) et échoue en douceur pour ne jamais bloquer
+l'hôte.
 
-```bash
-# entrypoint Docker / hook SessionStart / systemd / cron @reboot
-/chemin/RSI/scripts/auto-connect.sh
+> **Choix de sécurité : stdio plutôt que HTTP/SSE.** Le serveur MCP communique
+> exclusivement sur stdin/stdout : **aucun port réseau n'est ouvert**, donc pas
+> de surface d'attaque distante, pas de besoin d'authentification ni de TLS.
+> C'est la configuration la plus sûre et celle retenue par défaut.
+>
+> **Opt-in explicite.** Aucun hook auto-exécutable n'est committé dans le
+> dépôt (exécuter un build au seul fait d'ouvrir le repo serait en soi un
+> risque). Vous activez le déclenchement vous-même, via l'un des câblages
+> ci-dessous.
+
+```jsonc
+// Claude Code — .claude/settings.json (à créer côté utilisateur)
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command",
+        "command": "bash /chemin/RSI/scripts/session-start-hook.sh" } ] }
+    ]
+  }
+}
+```
+
+```dockerfile
+# Docker — entrypoint
+ENTRYPOINT ["/chemin/RSI/scripts/session-start-hook.sh"]
+```
+
+```ini
+# systemd — ExecStartPre   |   cron — @reboot /chemin/RSI/scripts/session-start-hook.sh
+[Service]
+ExecStartPre=/chemin/RSI/scripts/session-start-hook.sh
 ```
 
 Au prochain démarrage du runtime (openclaw / hermes-agent), le serveur RSI est
 découvert et chargé automatiquement — l'agent IA dispose alors des outils
 `rsi_*` sans aucune configuration manuelle.
+
+---
+
+## Modèle de sécurité
+
+Le système est conçu pour traiter des **entrées non fiables** (un agent LLM
+distant peut envoyer n'importe quel JSON au serveur MCP). Les protections :
+
+| Surface | Risque | Protection |
+|---------|--------|------------|
+| Transport MCP | exposition réseau | **stdio uniquement** (aucun port ouvert) |
+| Parseur JSON | stack-overflow par imbrication profonde | garde-fou de profondeur (`MAX_DEPTH = 128`) |
+| `create` | épuisement mémoire/CPU (DoS) | bornes sur `dim`, `n_tasks`, `n_hardware/software`, optimiseur |
+| `run` | boucle CPU illimitée | `steps` plafonné (`MAX_STEPS`) |
+| sessions | fuite mémoire par création illimitée | plafond `MAX_SESSIONS = 64` |
+| `rsi-connect` | config lisible par d'autres utilisateurs | fichiers écrits en **`0600`** (Unix) |
+| exécution | injection de commande | aucune ; le binaire MCP ne lance aucun sous-processus |
+
+Toutes les valeurs hors limites sont **silencieusement bornées** (jamais de
+panique), et les valeurs invalides renvoient une erreur JSON-RPC propre.
 
 > **Note sur les schémas de configuration.** Le descripteur émis suit le
 > format de facto `mcpServers` (Claude Desktop & la majorité des clients MCP).
