@@ -101,22 +101,66 @@ Chaque [`StepReport`](src/agent.rs) expose :
   d'un agent devenu substrate-limited) ;
 - `capabilities` — niveaux `(D,M,R,A,C,V)`.
 
+## Extensions
+
+- **Modèles `Φ_x` / `g_x` configurables** via les traits `CapabilityModel` /
+  `CeilingModel` (`surface.rs`) — branchez n'importe quelle loi de
+  compétence/plafond sans toucher au reste.
+- **Méta-optimiseur sep-CMA-ES** (`cma.rs`) en plus de la recherche aléatoire,
+  derrière le trait `MetaSearch` ; sélectionnable par `optimizer: random|cma`.
+- **Export CSV / JSON** de la trajectoire (`report.rs`, flags `--csv`/`--json`).
+- **API** orientée commandes JSON (`api.rs`, `RsiApi`).
+- **Serveur MCP** (`rsi-mcp`) pour piloter le système depuis un agent IA / LLM.
+- **Auto-connexion** (`rsi-connect` + `scripts/auto-connect.sh`) aux runtimes
+  d'agents (openclaw, hermes-agent, …) sans intervention humaine.
+
+### Intégration agent IA / LLM
+
+```bash
+cargo build --release --bins
+./scripts/auto-connect.sh            # build + enregistrement MCP automatique
+./target/release/rsi-mcp             # serveur MCP (JSON-RPC 2.0 sur stdio)
+```
+
+Voir le guide complet : [`docs/INTEGRATION.md`](docs/INTEGRATION.md)
+(API, outils MCP, schémas, boucle d'auto-amélioration côté LLM, auto-connexion).
+
+### Paper scientifique
+
+Formalisation, implémentation et résultats expérimentaux :
+[`paper/rsi.md`](paper/rsi.md) (Markdown) et [`paper/rsi.tex`](paper/rsi.tex)
+(source LaTeX).
+
 ## Architecture
 
 ```
 src/
-├── lib.rs        exports + table de correspondance équations/modules
-├── rng.rs        PRNG xoshiro256** + Dirichlet/normale (std-only)
-├── linalg.rs     vecteurs, matrices denses, formes quadratiques, σ
-├── state.rs      §2  S = (D,M,R,A,C,V)
-├── substrate.rs  §3  P_eff = σ(HᵀAH)·σ(OᵀBO)·σ(HᵀCO)
-├── surface.rs    §1  Σ_I, C_réel = min(Φ,g), SI_global
-├── dynamics.rs   §4  dS/dt + contraintes ‖ΔS‖<λ et non-régression ε
-├── meta.rs       §5  ℳ et méta-révision argmax_ℳ SI_global
-├── agent.rs      §5/§6  boucle discrète complète
-└── main.rs       binaire de démonstration
+├── lib.rs          exports + table de correspondance équations/modules
+├── rng.rs          PRNG xoshiro256** + Dirichlet/normale (std-only)
+├── linalg.rs       vecteurs, matrices denses, formes quadratiques, σ
+├── state.rs        §2  S = (D,M,R,A,C,V)
+├── substrate.rs    §3  P_eff = σ(HᵀAH)·σ(OᵀBO)·σ(HᵀCO)
+├── surface.rs      §1  Σ_I, C_réel = min(Φ,g), SI_global + traits Φ/g
+├── dynamics.rs     §4  dS/dt + contraintes ‖ΔS‖<λ et non-régression ε
+├── meta.rs         §5  ℳ, trait MetaSearch, recherche aléatoire + CMA-ES
+├── cma.rs          §5  sep-CMA-ES (covariance diagonale)
+├── agent.rs        §5/§6  boucle discrète complète
+├── json.rs         (dé)sérialisation JSON std-only
+├── report.rs       export CSV / JSON de la trajectoire
+├── api.rs          façade RsiApi (commandes JSON in/out)
+├── main.rs         binaire de démonstration (rsi-demo)
+└── bin/
+    ├── rsi_mcp.rs      serveur MCP (JSON-RPC 2.0 / stdio)
+    └── rsi_connect.rs  auto-enregistrement MCP (openclaw, hermes-agent, …)
+scripts/
+└── auto-connect.sh  build + connexion MCP automatique
+docs/
+└── INTEGRATION.md   guide API / MCP / LLM / auto-connexion
+paper/
+├── rsi.md           paper scientifique (anglais)
+└── rsi.tex          source LaTeX
 tests/
-└── integration.rs  trajectoire stable & croissante, déterminisme, substrat
+└── integration.rs   trajectoire stable & croissante, déterminisme, substrat
 ```
 
 ## Licence

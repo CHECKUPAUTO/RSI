@@ -16,7 +16,7 @@
 //! résumé scalaire (volume sous Σ_I), suivi à chaque pas.
 
 use crate::dynamics::{Dynamics, StabilityConfig, StepInfo};
-use crate::meta::{MetaOptimizer, MetaStrategy};
+use crate::meta::{CmaEsMeta, MetaOptimizer, MetaSearch, MetaStrategy};
 use crate::state::{delta_norm, CognitiveState, Dims};
 use crate::substrate::Substrate;
 use crate::surface::IntelligenceSurface;
@@ -36,13 +36,17 @@ pub struct StepReport {
 }
 
 /// Agent cognitif auto-améliorant.
+///
+/// La stratégie de méta-recherche est polymorphe ([`MetaSearch`]) : on peut y
+/// brancher [`MetaOptimizer`] (recherche aléatoire) ou [`CmaEsMeta`]
+/// (sep-CMA-ES) sans changer la boucle.
 pub struct RSIAgent {
     pub state: CognitiveState,
     pub substrate: Substrate,
     pub surface: IntelligenceSurface,
     pub strategy: MetaStrategy,
     pub dynamics_cfg: StabilityConfig,
-    pub meta: MetaOptimizer,
+    pub meta: Box<dyn MetaSearch>,
     pub t: usize,
 }
 
@@ -53,7 +57,7 @@ impl RSIAgent {
         substrate: Substrate,
         surface: IntelligenceSurface,
         dynamics_cfg: StabilityConfig,
-        meta: MetaOptimizer,
+        meta: Box<dyn MetaSearch>,
     ) -> Self {
         let strategy = MetaStrategy::neutral(substrate.o.len());
         RSIAgent {
@@ -67,15 +71,28 @@ impl RSIAgent {
         }
     }
 
-    /// Construit un agent de démonstration entièrement reproductible (seed).
-    pub fn demo(seed: u64) -> Self {
+    /// Sous-systèmes communs d'un agent de démonstration (reproductible).
+    fn demo_parts(seed: u64) -> (CognitiveState, Substrate, IntelligenceSurface) {
         use crate::rng::Rng;
         let mut rng = Rng::new(seed);
         let dims = Dims::uniform(6);
         let state = CognitiveState::random(dims, &mut rng, 0.08);
         let substrate = Substrate::default_with(4, 4, &mut rng);
         let surface = IntelligenceSurface::sample(1024, &mut rng);
-        let meta = MetaOptimizer::new(48, 0.12, seed ^ 0xABCD);
+        (state, substrate, surface)
+    }
+
+    /// Agent de démonstration avec méta-révision par **recherche aléatoire**.
+    pub fn demo(seed: u64) -> Self {
+        let (state, substrate, surface) = Self::demo_parts(seed);
+        let meta = Box::new(MetaOptimizer::new(48, 0.12, seed ^ 0xABCD));
+        RSIAgent::new(state, substrate, surface, StabilityConfig::default(), meta)
+    }
+
+    /// Agent de démonstration avec méta-révision par **sep-CMA-ES**.
+    pub fn demo_cma(seed: u64) -> Self {
+        let (state, substrate, surface) = Self::demo_parts(seed);
+        let meta = Box::new(CmaEsMeta::new(0, 10, 0.3, seed ^ 0xC3A));
         RSIAgent::new(state, substrate, surface, StabilityConfig::default(), meta)
     }
 

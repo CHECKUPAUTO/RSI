@@ -19,6 +19,16 @@
 //! | §5      | Boucle discrète + méta-révision `ℳ = argmax`       | [`meta`]      |
 //! | §5/§6   | Agent complet (forme compacte / équation d'ondes)  | [`agent`]     |
 //!
+//! ## Extensions
+//!
+//! - [`cma`]    : méta-optimiseur sep-CMA-ES (alternative à la recherche aléatoire) ;
+//! - [`report`] : export CSV / JSON de la trajectoire ;
+//! - [`surface`] : modèles `Φ_x` / `g_x` configurables via traits ;
+//! - [`json`]   : (dé)sérialisation JSON std-only ;
+//! - [`api`]    : façade orientée commandes (JSON in / JSON out) ;
+//! - binaire `rsi-mcp` : serveur **MCP** (Model Context Protocol) pour piloter
+//!   le système depuis un agent IA / LLM.
+//!
 //! ## Exemple
 //!
 //! ```
@@ -32,18 +42,28 @@
 //! ```
 
 pub mod agent;
+pub mod api;
+pub mod cma;
 pub mod dynamics;
+pub mod json;
 pub mod linalg;
 pub mod meta;
+pub mod report;
 pub mod rng;
 pub mod state;
 pub mod substrate;
 pub mod surface;
 
 pub use agent::{RSIAgent, StepReport};
+pub use api::{ApiResult, RsiApi};
+pub use cma::SepCmaEs;
 pub use dynamics::{Dynamics, StabilityConfig, StepInfo};
-pub use meta::{MetaOptimizer, MetaStrategy};
+pub use json::Json;
+pub use meta::{CmaEsMeta, MetaOptimizer, MetaSearch, MetaStrategy};
 pub use rng::Rng;
 pub use state::{CognitiveState, Dims};
 pub use substrate::Substrate;
-pub use surface::{Bottleneck, IntelligenceSurface};
+pub use surface::{
+    Bottleneck, CapabilityModel, CeilingModel, IntelligenceSurface, PowerCeiling,
+    SigmoidCapability,
+};

@@ -13,29 +13,97 @@
 //! - `g_x(P_eff)` : plafond *physique* imposé par le substrat ;
 //! - `C_réel = min(Φ, g)` : goulot d'étranglement cognitif OU matériel ;
 //! - `SI_global` : volume sous la surface, estimé par Monte-Carlo sur μ.
+//!
+//! Les fonctions `Φ_x` et `g_x` sont **configurables** via les traits
+//! [`CapabilityModel`] et [`CeilingModel`] : on peut brancher n'importe quelle
+//! loi de compétence/plafond sans toucher au reste du système.
+
+use std::fmt::Debug;
 
 use crate::linalg::dot;
 use crate::rng::Rng;
 use crate::state::CognitiveState;
 use crate::substrate::Substrate;
 
-/// Compétence cognitive Φ_x(S) ∈ [0, 1] pour une tâche `task` (profil sur 6
-/// composantes) et les niveaux de capacité `caps` = (D,M,R,A,C,V).
+// ----------------------------------------------------------------------- //
+// Traits configurables Φ_x et g_x
+// ----------------------------------------------------------------------- //
+
+/// Modèle de compétence cognitive `Φ_x(S) ∈ [0, 1]`.
 ///
-/// La tâche projette les capacités sur ses besoins ; la compétence est une
-/// sigmoïde décalée du produit scalaire (faible si capacités insuffisantes).
-fn phi(task: &[f64; 6], caps: &[f64; 6]) -> f64 {
-    let raw = dot(task, caps);
-    1.0 / (1.0 + (-(raw - 0.5) * 4.0).exp())
+/// Reçoit le profil de besoins d'une tâche (`task`, 6 poids sur D,M,R,A,C,V)
+/// et les niveaux de capacité courants de l'agent (`caps`).
+pub trait CapabilityModel: Debug {
+    fn phi(&self, task: &[f64; 6], caps: &[f64; 6]) -> f64;
+    /// Support du `Clone` pour les objets-traits (pattern clone_box).
+    fn clone_box(&self) -> Box<dyn CapabilityModel>;
 }
 
-/// Plafond physique g_x(P_eff) ∈ [0, 1].
+/// Modèle de plafond physique `g_x(P_eff) ∈ [0, 1]`.
 ///
-/// `demand` ∈ [0,1] est l'exigence calculatoire normalisée de la tâche. Une
-/// tâche lourde est davantage bridée par un substrat faible : g = P_eff^demand.
-fn g(p_eff: f64, demand: f64) -> f64 {
-    p_eff.powf(demand)
+/// Reçoit l'efficacité du substrat `p_eff` et l'exigence calculatoire
+/// normalisée `demand ∈ [0,1]` de la tâche.
+pub trait CeilingModel: Debug {
+    fn g(&self, p_eff: f64, demand: f64) -> f64;
+    fn clone_box(&self) -> Box<dyn CeilingModel>;
 }
+
+impl Clone for Box<dyn CapabilityModel> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+impl Clone for Box<dyn CeilingModel> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
+/// Compétence par sigmoïde décalée : `Φ = σ( (⟨task,caps⟩ − bias) · slope )`.
+///
+/// C'est le modèle par défaut : la compétence est faible tant que les
+/// capacités ne couvrent pas les besoins de la tâche, puis sature vers 1.
+#[derive(Clone, Debug)]
+pub struct SigmoidCapability {
+    pub slope: f64,
+    pub bias: f64,
+}
+
+impl Default for SigmoidCapability {
+    fn default() -> Self {
+        SigmoidCapability { slope: 4.0, bias: 0.5 }
+    }
+}
+
+impl CapabilityModel for SigmoidCapability {
+    fn phi(&self, task: &[f64; 6], caps: &[f64; 6]) -> f64 {
+        let raw = dot(task, caps);
+        1.0 / (1.0 + (-(raw - self.bias) * self.slope).exp())
+    }
+    fn clone_box(&self) -> Box<dyn CapabilityModel> {
+        Box::new(self.clone())
+    }
+}
+
+/// Plafond en loi de puissance : `g = P_eff^demand`.
+///
+/// Une tâche lourde (demand → 1) est davantage bridée par un substrat faible ;
+/// une tâche légère (demand → 0) atteint un plafond proche de 1.
+#[derive(Clone, Debug, Default)]
+pub struct PowerCeiling;
+
+impl CeilingModel for PowerCeiling {
+    fn g(&self, p_eff: f64, demand: f64) -> f64 {
+        p_eff.powf(demand)
+    }
+    fn clone_box(&self) -> Box<dyn CeilingModel> {
+        Box::new(self.clone())
+    }
+}
+
+// ----------------------------------------------------------------------- //
+// Surface d'intelligence
+// ----------------------------------------------------------------------- //
 
 /// Surface d'intelligence Σ_I et fonctionnelle SI_global.
 ///
@@ -51,38 +119,53 @@ pub struct IntelligenceSurface {
     pub demand: Vec<f64>,
     /// Poids de μ, normalisés (∑ = 1).
     pub weights: Vec<f64>,
+    /// Modèle de compétence cognitive Φ_x (configurable).
+    pub capability: Box<dyn CapabilityModel>,
+    /// Modèle de plafond physique g_x (configurable).
+    pub ceiling: Box<dyn CeilingModel>,
 }
 
 impl IntelligenceSurface {
-    /// Tire Ω ~ μ : profils de besoins via Dirichlet, importances uniformes.
+    /// Tire Ω ~ μ avec les modèles par défaut (sigmoïde + loi de puissance).
     pub fn sample(n_tasks: usize, rng: &mut Rng) -> Self {
+        Self::sample_with(
+            n_tasks,
+            rng,
+            Box::new(SigmoidCapability::default()),
+            Box::new(PowerCeiling),
+        )
+    }
+
+    /// Tire Ω ~ μ avec des modèles Φ_x / g_x personnalisés.
+    pub fn sample_with(
+        n_tasks: usize,
+        rng: &mut Rng,
+        capability: Box<dyn CapabilityModel>,
+        ceiling: Box<dyn CeilingModel>,
+    ) -> Self {
         let mut tasks = Vec::with_capacity(n_tasks);
-        let mut demand = Vec::with_capacity(n_tasks);
         let mut weights = Vec::with_capacity(n_tasks);
+        let mut raw_demand = Vec::with_capacity(n_tasks);
 
         let alpha = [1.0; 6];
-        let mut raw_demand = Vec::with_capacity(n_tasks);
         for _ in 0..n_tasks {
             let d = rng.dirichlet(&alpha);
-            let task = [d[0], d[1], d[2], d[3], d[4], d[5]];
-            tasks.push(task);
-            // exigence calculatoire ∝ concentration des besoins (avant normalisation)
-            let raw: f64 = rng.uniform_range(0.5, 2.0);
-            raw_demand.push(raw);
+            tasks.push([d[0], d[1], d[2], d[3], d[4], d[5]]);
+            raw_demand.push(rng.uniform_range(0.5, 2.0));
             weights.push(rng.uniform_range(0.2, 1.0));
         }
+
         // normalise la demande dans [0,1]
         let max_d = raw_demand.iter().cloned().fold(f64::MIN, f64::max).max(1e-9);
-        for r in &raw_demand {
-            demand.push(r / max_d);
-        }
+        let demand: Vec<f64> = raw_demand.iter().map(|r| r / max_d).collect();
+
         // normalise μ
         let sum_w: f64 = weights.iter().sum::<f64>().max(1e-12);
         for w in weights.iter_mut() {
             *w /= sum_w;
         }
 
-        IntelligenceSurface { tasks, demand, weights }
+        IntelligenceSurface { tasks, demand, weights, capability, ceiling }
     }
 
     /// C_réel(x,t) = min( Φ_x(S), g_x(P_eff) ) pour chaque tâche de Ω.
@@ -92,7 +175,9 @@ impl IntelligenceSurface {
         self.tasks
             .iter()
             .zip(&self.demand)
-            .map(|(task, &dem)| phi(task, &caps).min(g(p_eff, dem)))
+            .map(|(task, &dem)| {
+                self.capability.phi(task, &caps).min(self.ceiling.g(p_eff, dem))
+            })
             .collect()
     }
 
@@ -111,8 +196,8 @@ impl IntelligenceSurface {
         let mut mean_phi = 0.0;
         let mut mean_g = 0.0;
         for ((task, &dem), &w) in self.tasks.iter().zip(&self.demand).zip(&self.weights) {
-            let p = phi(task, &caps);
-            let gg = g(p_eff, dem);
+            let p = self.capability.phi(task, &caps);
+            let gg = self.ceiling.g(p_eff, dem);
             if gg < p {
                 frac_substrate += w;
             }
@@ -160,5 +245,30 @@ mod tests {
         let low = CognitiveState::from_vector(&[0.1; 24], Dims::uniform(4));
         let high = CognitiveState::from_vector(&[0.9; 24], Dims::uniform(4));
         assert!(surf.si_global(&high, &sub) >= surf.si_global(&low, &sub));
+    }
+
+    #[test]
+    fn custom_models_are_used() {
+        // plafond nul ⇒ C_réel ≡ 0 ⇒ SI_global = 0, quel que soit l'état
+        #[derive(Debug, Clone)]
+        struct ZeroCeiling;
+        impl CeilingModel for ZeroCeiling {
+            fn g(&self, _p: f64, _d: f64) -> f64 {
+                0.0
+            }
+            fn clone_box(&self) -> Box<dyn CeilingModel> {
+                Box::new(self.clone())
+            }
+        }
+        let mut rng = Rng::new(1);
+        let surf = IntelligenceSurface::sample_with(
+            128,
+            &mut rng,
+            Box::new(SigmoidCapability::default()),
+            Box::new(ZeroCeiling),
+        );
+        let state = CognitiveState::from_vector(&[0.9; 24], Dims::uniform(4));
+        let sub = Substrate::default_with(4, 4, &mut rng);
+        assert!(surf.si_global(&state, &sub).abs() < 1e-12);
     }
 }
