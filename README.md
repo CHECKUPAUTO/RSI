@@ -203,4 +203,8 @@ tests/
 
 ## Licence
 
-MIT (voir [LICENSE](LICENSE)).
+**Double licence** (voir [LICENSING.md](LICENSING.md)) :
+
+- **Non commercial** — particuliers, chercheurs, éducation, gouvernement :
+  gratuit sous [PolyForm Noncommercial 1.0.0](LICENSE.md).
+- **Commercial** — licence séparée : **contact@checkupauto.fr**.
