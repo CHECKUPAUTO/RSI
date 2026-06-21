@@ -80,12 +80,31 @@ Chaque `StepReport` expose désormais `risk_global`, `max_rpn`, `most_critical`,
 λ/ε de §4 deviennent des cas particuliers de la maîtrise du risque (modes
 régression/instabilité).
 
-### Place de CCOS dans ce cadre
+### §7bis — Port d'audit & déterminisme (CCOS)
 
-CCOS trouve ici sa fonction naturelle : **détecteur + forensics**. Son journal
-hash-chaîné et son *replay* améliorent la *Détectabilité* des modes (surtout
-l'empoisonnement mémoire et le wireheading) et rendent chaque pas de `ℳ`
-**auditable et rejouable** — l'étape suivante recommandée.
+Implémenté : le module cœur [`audit.rs`](../src/audit.rs) fournit le trait
+`AuditLog` et `HashChainLog`, un **journal hash-chaîné SHA-256** (SHA-256 en
+Rust pur, [`sha256.rs`](../src/sha256.rs), validé contre les vecteurs NIST) du
+**même schéma que l'`EventLog` de CCOS** (`TraceEvent { sequence_number,
+prev_hash, hash, event_type, payload }`). Chaque pas de `ℳ` est enregistré :
+
+- **traçabilité** : `record(AuditEvent)` chaîne SHA-256 chaque pas ;
+- **intégrité** : `verify()` détecte toute altération (lien rompu / contenu
+  falsifié) ;
+- **déterminisme** : même trajectoire ⇒ même `head()` (hash de tête
+  reproductible) ;
+- **replay** : `replay(from, to)` rejoue une sous-séquence ;
+- **pont CCOS** : `to_ccos_json()` exporte un flux ingestable par
+  `ExternalMemory::ingest_source` de CCOS pour la forensique avancée.
+
+Branchement : `RSIAgent::with_audit(Box::new(HashChainLog::new()))`, puis
+`audit_head()`, `audit_verify()`, `audit_len()`.
+
+> **Pourquoi pas une dépendance directe à CCOS ?** CCOS n'a **aucune licence**
+> et tire `tokio(full)` + `reqwest` (non optionnels). Plutôt que d'imposer ce
+> poids et ce risque juridique, le port d'audit reproduit nativement le schéma
+> hash-chaîné de CCOS (zéro dépendance) et **exporte au format CCOS** : le pont
+> réel sera trivial une fois CCOS doté d'une licence.
 
 ## Effet observé
 

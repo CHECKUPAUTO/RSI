@@ -147,6 +147,10 @@ Chaque [`StepReport`](src/agent.rs) expose :
   `risk_global`, `max_rpn`, `most_critical`, `si_safe`. Optimisations
   d'intégration (mémoire active, canal substrat unifié, campagnes amorties) :
   voir [`docs/OPTIMIZATION.md`](docs/OPTIMIZATION.md).
+- **§7bis — Audit & déterminisme** : `audit.rs` (cœur) — journal **hash-chaîné
+  SHA-256** (SHA-256 Rust pur, schéma `EventLog` de CCOS) rendant chaque pas de
+  `ℳ` **traçable, vérifiable et rejouable** (`with_audit`, `audit_head/verify`),
+  avec export ingestable par CCOS.
 
 ### Intégration agent IA / LLM
 
