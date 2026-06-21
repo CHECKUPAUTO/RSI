@@ -18,7 +18,7 @@
 use crate::dynamics::{Dynamics, StabilityConfig, StepInfo};
 use crate::meta::{CmaEsMeta, MetaOptimizer, MetaSearch, MetaStrategy};
 use crate::state::{delta_norm, CognitiveState, Dims};
-use crate::substrate::Substrate;
+use crate::substrate::{Substrate, SubstrateImprover};
 use crate::surface::IntelligenceSurface;
 
 /// Rapport d'un pas de la boucle RSI.
@@ -47,6 +47,9 @@ pub struct RSIAgent {
     pub strategy: MetaStrategy,
     pub dynamics_cfg: StabilityConfig,
     pub meta: Box<dyn MetaSearch>,
+    /// Améliorateur de substrat optionnel (Phase 2 — P_eff *mesuré*). `None`
+    /// par défaut → boucle d'origine inchangée.
+    pub substrate_opt: Option<Box<dyn SubstrateImprover>>,
     pub t: usize,
 }
 
@@ -67,8 +70,16 @@ impl RSIAgent {
             strategy,
             dynamics_cfg,
             meta,
+            substrate_opt: None,
             t: 0,
         }
+    }
+
+    /// Branche un améliorateur de substrat (Phase 2 : P_eff *mesuré* par une
+    /// optimisation exécutée, p. ex. Forge). Builder fluide.
+    pub fn with_substrate_improver(mut self, improver: Box<dyn SubstrateImprover>) -> Self {
+        self.substrate_opt = Some(improver);
+        self
     }
 
     /// Sous-systèmes communs d'un agent de démonstration (reproductible).
@@ -118,11 +129,20 @@ impl RSIAgent {
 
         // La réécriture logicielle n'est acceptée que si elle n'abaisse pas P_eff
         // (garde-fou : l'auto-amélioration du substrat ne doit pas régresser).
-        let substrate = if new_substrate.effective_power() >= self.substrate.effective_power() {
+        let mut substrate = if new_substrate.effective_power() >= self.substrate.effective_power() {
             new_substrate
         } else {
             self.substrate.clone()
         };
+
+        // 2bis) amélioration du substrat exécutée (Phase 2 : P_eff mesuré).
+        // Même garde-fou de non-régression de P_eff.
+        if let Some(opt) = self.substrate_opt.as_mut() {
+            let improved = opt.improve(&substrate);
+            if improved.effective_power() >= substrate.effective_power() {
+                substrate = improved;
+            }
+        }
 
         // 3) ΔS_appr : apprentissage via la dynamique continue contrainte (§4)
         let dynamics = Dynamics::new(&self.surface, self.dynamics_cfg);

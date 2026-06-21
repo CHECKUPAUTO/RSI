@@ -21,6 +21,11 @@ pub struct Substrate {
     pub a: Matrix,   // nᴴ × nᴴ — efficience interne matérielle
     pub b: Matrix,   // nᴼ × nᴼ — efficience interne logicielle
     pub c: Matrix,   // nᴴ × nᴼ — couplage hardware ↔ software
+    /// Efficience logicielle **mesurée** ∈ (0,1), si disponible (Phase 2 :
+    /// calibrée par une campagne Forge sur un vrai kernel). Quand `Some`, elle
+    /// remplace la forme analytique σ(OᵀB O) dans `software_efficiency`.
+    /// `None` par défaut → comportement d'origine inchangé.
+    pub measured_software_eff: Option<f64>,
 }
 
 impl Substrate {
@@ -29,7 +34,12 @@ impl Substrate {
         assert_eq!((a.rows, a.cols), (nh, nh), "A doit être nᴴ×nᴴ");
         assert_eq!((b.rows, b.cols), (no, no), "B doit être nᴼ×nᴼ");
         assert_eq!((c.rows, c.cols), (nh, no), "C doit être nᴴ×nᴼ");
-        Substrate { h, o, a, b, c }
+        Substrate { h, o, a, b, c, measured_software_eff: None }
+    }
+
+    /// Fixe (ou efface) l'efficience logicielle mesurée. Bornée dans (0,1).
+    pub fn set_measured_software_eff(&mut self, value: Option<f64>) {
+        self.measured_software_eff = value.map(|v| v.clamp(1e-6, 1.0 - 1e-9));
     }
 
     /// Substrat raisonnable : matrices d'efficience symétriques définies
@@ -70,9 +80,13 @@ impl Substrate {
         sigmoid(self.a.quadratic(&self.h))
     }
 
-    /// σ(OᵀB O) — efficience interne logicielle ∈ (0, 1).
+    /// Efficience logicielle ∈ (0, 1) : la valeur **mesurée** si disponible
+    /// (Phase 2), sinon la forme analytique σ(OᵀB O).
     pub fn software_efficiency(&self) -> f64 {
-        sigmoid(self.b.quadratic(&self.o))
+        match self.measured_software_eff {
+            Some(v) => v,
+            None => sigmoid(self.b.quadratic(&self.o)),
+        }
     }
 
     /// σ(HᵀC O) — efficience du couplage hardware ↔ software ∈ (0, 1).
@@ -86,9 +100,32 @@ impl Substrate {
     }
 }
 
+/// Améliorateur de substrat (Phase 2).
+///
+/// Implémenté par un backend d'optimisation *exécutée* (p. ex. une campagne
+/// Forge sur un vrai kernel) qui calibre l'efficience logicielle mesurée et
+/// renvoie un substrat amélioré. **Contrat de monotonie** : ne doit jamais
+/// renvoyer un substrat de `effective_power()` inférieur à l'entrée (l'agent
+/// applique de toute façon un garde-fou, mais l'implémentation doit l'assurer).
+pub trait SubstrateImprover {
+    fn improve(&mut self, substrate: &Substrate) -> Substrate;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn measured_eff_overrides_analytic() {
+        let mut rng = Rng::new(3);
+        let mut s = Substrate::default_with(4, 4, &mut rng);
+        let analytic = s.software_efficiency();
+        s.set_measured_software_eff(Some(0.95));
+        assert!((s.software_efficiency() - 0.95).abs() < 1e-12);
+        assert_ne!(analytic, s.software_efficiency());
+        s.set_measured_software_eff(None);
+        assert!((s.software_efficiency() - analytic).abs() < 1e-12);
+    }
 
     #[test]
     fn p_eff_in_unit_interval() {
