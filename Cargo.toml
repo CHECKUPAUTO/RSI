@@ -24,6 +24,11 @@ forge = ["dep:forge-core", "dep:rand", "dep:serde"]
 octasoma = ["dep:octasoma"]
 # Audit/déterminisme adossé à l'EventLog hash-chaîné de CCOS.
 ccos = ["dep:ccos"]
+# Moteur d'ascension réel `scirust-rsi` (pont src/scirust_bridge.rs).
+# Déclarée vide pour rester compilable hors-ligne ; pour l'ACTIVER dans un
+# environnement où CHECKUPAUTO/scirust est joignable, voir SCIRUST_ACTIVATION.md
+# (passer à : scirust = ["dep:scirust-rsi", "dep:rand"] + ajouter la dépendance).
+scirust = []
 
 [dependencies]
 forge-core = { git = "https://github.com/CHECKUPAUTO/forge", optional = true }

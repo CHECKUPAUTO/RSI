@@ -70,6 +70,8 @@ pub mod octasoma_memory;
 pub mod report;
 pub mod rng;
 pub mod schedule;
+#[cfg(feature = "scirust")]
+pub mod scirust_bridge;
 pub mod sha256;
 pub mod state;
 pub mod substrate;
