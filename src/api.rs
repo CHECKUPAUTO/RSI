@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 use crate::agent::{RSIAgent, StepReport};
 use crate::dynamics::StabilityConfig;
 use crate::json::Json;
+use crate::loop_ctrl::{LoopConfig, StopReason};
 use crate::meta::{CmaEsMeta, MetaOptimizer, MetaSearch};
 use crate::rng::Rng;
 use crate::state::{CognitiveState, Dims};
@@ -81,6 +82,7 @@ impl RsiApi {
             "create" => self.cmd_create(params),
             "step" => self.cmd_step(params),
             "run" => self.cmd_run(params),
+            "run_until" => self.cmd_run_until(params),
             "state" => self.cmd_state(params),
             "export" => self.cmd_export(params),
             "reset" => self.cmd_reset(params),
@@ -163,6 +165,62 @@ impl RsiApi {
         out.set("ok", Json::Bool(true))
             .set("id", Json::Str(id))
             .set("steps", Json::Num(steps as f64))
+            .set("si_start", Json::Num(si_start))
+            .set("total_steps", Json::Num(s.agent.t as f64));
+        if let Some(r) = last {
+            out.set("si_end", Json::Num(r.si_global))
+                .set("gain", Json::Num(r.si_global - si_start))
+                .set("last", step_report_json(&r));
+        }
+        Ok(out)
+    }
+
+    /// L7 — pilote la boucle jusqu'à un critère d'arrêt (budget, cible, plateau,
+    /// disjoncteur). Pilotable par un agent LLM via MCP.
+    fn cmd_run_until(&mut self, params: &Json) -> ApiResult {
+        let id = Self::session_id(params);
+        let mut lcfg = LoopConfig {
+            max_steps: bounded(params, "max_steps", 500, 1, MAX_STEPS),
+            plateau_window: bounded(params, "plateau_window", 12, 2, 10_000),
+            ..LoopConfig::default()
+        };
+        if let Some(v) = params.get("target_si").and_then(|v| v.as_f64()) {
+            lcfg.target_si = Some(v);
+        }
+        if let Some(v) = params.get("plateau_eps").and_then(|v| v.as_f64()) {
+            lcfg.plateau_eps = v;
+        }
+        if let Some(v) = params.get("breaker_rpn").and_then(|v| v.as_f64()) {
+            lcfg.breaker_rpn = Some(v);
+            lcfg.rollback_on_breach =
+                params.get("rollback_on_breach").and_then(|v| v.as_bool()).unwrap_or(true);
+        }
+        if let Some(v) = params.get("max_seconds").and_then(|v| v.as_f64()) {
+            lcfg.max_seconds = Some(v);
+        }
+
+        let s = self.session_mut(&id)?;
+        let si_start = s.agent.si_global();
+        let outcome = s.agent.run_until(&lcfg);
+        let last = outcome.reports.last().cloned();
+        s.history.extend(outcome.reports);
+
+        let reason = match outcome.reason {
+            StopReason::MaxSteps => "max_steps",
+            StopReason::TargetReached => "target_reached",
+            StopReason::Plateau => "plateau",
+            StopReason::Diverged => "diverged",
+            StopReason::Timeout => "timeout",
+            StopReason::CircuitBreaker => "circuit_breaker",
+            StopReason::Vetoed => "vetoed",
+        };
+
+        let mut out = Json::obj();
+        out.set("ok", Json::Bool(true))
+            .set("id", Json::Str(id))
+            .set("reason", Json::Str(reason.into()))
+            .set("steps", Json::Num(outcome.steps as f64))
+            .set("final_slope", Json::Num(outcome.final_slope))
             .set("si_start", Json::Num(si_start))
             .set("total_steps", Json::Num(s.agent.t as f64));
         if let Some(r) = last {
@@ -357,6 +415,7 @@ de stabilité (‖ΔS‖<λ et non-régression de SI_global)."
         ("create", "Crée une session. Params: id, seed, optimizer(random|cma), dim, n_tasks, n_hardware, n_software, lambda, epsilon, eta0, forgetting, phi_slope, phi_bias, (+ candidates/explore_scale ou population/generations/sigma0)."),
         ("step", "Un pas de boucle RSI. Params: id."),
         ("run", "Avance de N pas. Params: id, steps."),
+        ("run_until", "Pilote la boucle jusqu'à un critère d'arrêt. Params: id, max_steps, target_si, plateau_window, plateau_eps, breaker_rpn, max_seconds. Renvoie reason (max_steps|target_reached|plateau|diverged|timeout|circuit_breaker|vetoed)."),
         ("state", "Instantané: si_global, p_eff, capacités, goulot. Params: id."),
         ("export", "Exporte la trajectoire. Params: id, format(csv|json)."),
         ("reset", "Réinitialise la session. Params: id."),
@@ -412,6 +471,32 @@ mod tests {
             r
         }).unwrap();
         assert!(res.get("si_end").and_then(|v| v.as_f64()).unwrap() > 0.0);
+    }
+
+    #[test]
+    fn run_until_via_api_stops_on_target() {
+        let mut api = RsiApi::new();
+        let mut cfg = Json::obj();
+        cfg.set("id", Json::Str("L".into())).set("seed", Json::Num(7.0));
+        api.handle("create", &cfg).unwrap();
+        let si0 = api
+            .handle("state", &{
+                let mut s = Json::obj();
+                s.set("id", Json::Str("L".into()));
+                s
+            })
+            .unwrap()
+            .get("si_global")
+            .and_then(|v| v.as_f64())
+            .unwrap();
+
+        let mut p = Json::obj();
+        p.set("id", Json::Str("L".into()))
+            .set("max_steps", Json::Num(500.0))
+            .set("target_si", Json::Num(si0 + 0.03));
+        let res = api.handle("run_until", &p).unwrap();
+        assert_eq!(res.get("reason").and_then(|v| v.as_str()), Some("target_reached"));
+        assert!(res.get("si_end").and_then(|v| v.as_f64()).unwrap() >= si0 + 0.03);
     }
 
     #[test]

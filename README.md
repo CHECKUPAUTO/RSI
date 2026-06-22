@@ -170,9 +170,13 @@ Chaque [`StepReport`](src/agent.rs) expose :
   - introspection : `RSIAgent::active_backends()`.
 - **Validation empirique** : banc d'ablation `cargo run --release --bin rsi-ablate`
   (cœur pur) + corpus élargi — voir [`docs/VALIDATION.md`](docs/VALIDATION.md).
-- **Loop engineering (socle L1–L2)** : `RSIAgent::run_until(LoopConfig)` —
-  pilote de boucle avec arrêt motivé (budget, cible, **plateau**, divergence) +
-  `ConvergenceDetector`. Suite du chantier dans [`docs/ROADMAP.md`](docs/ROADMAP.md).
+- **Loop engineering (L1–L9 complet)** : moteur de boucle RSI — pilote
+  `run_until(LoopConfig)` avec arrêt motivé (budget/cible/**plateau**/divergence,
+  `ConvergenceDetector`), **checkpoint/reprise** (`snapshot`/`restore`),
+  **disjoncteurs de sûreté** (`breaker_rpn` + rollback), **cadences
+  multi-échelles** (`LoopSchedule`/`MetaMeta`), **observateur + veto HITL**
+  (`LoopObserver`), pilotage **MCP** (`rsi_run_until`), **swarm** parallèle
+  (`run_swarm`), et banc d'essai `rsi-loopbench`. Voir [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ### Démo « tout intégré »
 

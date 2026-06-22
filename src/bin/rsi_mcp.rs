@@ -168,6 +168,20 @@ fn tools_list() -> Json {
             &[],
         ),
         tool(
+            "rsi_run_until",
+            "Pilote la boucle RSI jusqu'à un critère d'arrêt motivé (budget, cible, plateau, disjoncteur de criticité).",
+            props(&[
+                id(),
+                ("max_steps", prop("integer", "Budget de pas (défaut 500).")),
+                ("target_si", prop("number", "Arrêt si SI_global ≥ cette valeur.")),
+                ("plateau_window", prop("integer", "Fenêtre de détection de plateau (défaut 12).")),
+                ("plateau_eps", prop("number", "Seuil de pente sous lequel = plateau.")),
+                ("breaker_rpn", prop("number", "Disjoncteur : arrêt/rollback si max_rpn dépasse ce seuil.")),
+                ("max_seconds", prop("number", "Budget de temps (s).")),
+            ]),
+            &[],
+        ),
+        tool(
             "rsi_state",
             "Renvoie un instantané: SI_global, P_eff, capacités (D,M,R,A,C,V), goulot d'étranglement.",
             props(&[id()]),

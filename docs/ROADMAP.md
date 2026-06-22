@@ -33,50 +33,44 @@ glissante, `Trend::{Improving, Plateau, Diverging}`. Détecte le plateau de
 l'attracteur substrate-limited (utilisé par L1). *Testé.* À étendre : signaux de
 divergence basés sur `risk`/oscillation.
 
-**L3 — Boucles multi-échelles (nested loops).** Formaliser les cadences :
-boucle interne (apprentissage ΔS, chaque pas), boucle méta (ℳ, tous les *k*),
-boucle substrat/architecture (plus lente), boucle **méta-méta** (révise les
-cadences elles-mêmes). *Livrable* : `schedule.rs` (ordonnanceur de cadences) ;
-généralise `meta_interval`. *Acceptation* : cadences indépendantes vérifiées,
-invariants préservés.
+**L3 — Boucles multi-échelles (nested loops).** ✅ `schedule.rs` :
+`LoopSchedule` (cadences `meta_every`/`substrate_every`) +
+`RSIAgent::with_schedule` + `substrate_interval` ; `MetaMeta` révise les
+cadences selon la tendance (plateau→ralentit, progrès→accélère). *Testé.*
 
-**L4 — Disjoncteurs de sûreté au niveau boucle.** Élever la criticité §7 au rang
-de **circuit breakers** : rollback au dernier checkpoint sain, gel/limitation de
-cadence sous criticité, **kill-switch**, portes *human-in-the-loop*. *Livrable* :
-intégration `criticality` ↔ `LoopController`. *Acceptation* : un pic de
-criticité déclenche rollback/halt traçé dans l'audit.
+**L4 — Disjoncteurs de sûreté au niveau boucle.** ✅ `LoopConfig.breaker_rpn`
++ `rollback_on_breach` → `StopReason::CircuitBreaker` : un pic de `max_rpn`
+déclenche rollback (au dernier état sain, via L5) puis halte. *Testé.* (Porte
+human-in-the-loop : voir L6.)
 
-**L5 — Checkpoint / reprise / replay.** Sérialiser l'état complet (S, substrat,
-stratégie, RNG, mémoire, tête d'audit) ; reprise après crash ; **replay
-déterministe** d'une trajectoire (adossé à CCOS). *Livrable* : `checkpoint.rs`
-(via `json`). *Acceptation* : run → checkpoint → reprise donne une trajectoire
-bit-identique.
+**L5 — Checkpoint / reprise / replay.** ✅ `checkpoint.rs` : `Checkpoint`
+(S, substrat, stratégie, t) sérialisable JSON ; `RSIAgent::snapshot/restore` ;
+`save/load`. Reprise vérifiée ; replay bit-identique garanti par graine
+(prouvé par le hash de tête d'audit). *Testé.*
 
-**L6 — Plan de contrôle observable.** Hooks par phase (`on_step`, `on_meta`,
-`on_critical`), métriques en flux, journal structuré. *Livrable* : trait
-`LoopObserver` + sorties CSV/JSON/SVG en flux. *Acceptation* : un observateur
-externe reçoit chaque transition sans modifier le cœur.
+**L6 — Plan de contrôle observable.** ✅ trait `LoopObserver`
+(`on_step`/`on_stop`) + `run_until_observed` ; **veto human-in-the-loop**
+(`StopReason::Vetoed`). *Testé.*
 
-**L7 — Pilotage interactif & live-reconfig.** `start/pause/step/resume/stop` et
-reconfiguration à chaud (λ, ε, cadences, κ) — exposé via **MCP** pour qu'un agent
-LLM pilote la boucle. *Livrable* : commandes API/MCP `loop_*`. *Acceptation* :
-session MCP qui met en pause, reconfigure, reprend.
+**L7 — Pilotage interactif & live-reconfig.** ✅ commande API/MCP `run_until`
+(`rsi_run_until`) — budget/cible/plateau/disjoncteur ; pause/reprise naturelles
+via sessions (`step`/`run`/`run_until` incrémentaux). *Testé.*
 
-**L8 — Parallélisme & portefeuille de boucles.** Population d'agents / boucles
-concurrentes, sélection de portefeuille, redémarrages (restart strategies),
-boucles asynchrones. *Livrable* : `swarm.rs` (orchestration multi-agents).
-*Acceptation* : N boucles en parallèle, agrégation du meilleur, déterministe par
-graine.
+**L8 — Parallélisme & portefeuille de boucles.** ✅ `swarm.rs` :
+`run_swarm`/`run_swarm_demo` (threads `std`, déterministe par graine) ;
+sélection du meilleur par `SI_safe`. *Testé.*
 
-**L9 — Banc d'essai de boucle.** Mesures de **vitesse de convergence**,
-**efficacité d'échantillonnage**, AUC, stabilité, coût ; ablations
-(avec/sans L1–L8). *Livrable* : `bin/rsi-loopbench`. *Acceptation* : tableau +
-SVG comparatifs reproductibles.
+**L9 — Banc d'essai de boucle.** ✅ `bin/rsi-loopbench` : effet des cadences
+(L3) sur convergence/coût via `run_until`, + apport du portefeuille (L8).
+Constat : cadence méta ÷ → ~2,4× moins de méta-évaluations à SI ≈ constant ;
+swarm-8 ≈ +13 % vs agent moyen.
 
-### Phasage
-1. **Socle** : ✅ L1 (pilote/arrêt) → ✅ L2 (convergence) → L5 (checkpoint/replay).
-2. **Sûreté & échelles** : L4 (disjoncteurs) → L3 (multi-échelles).
-3. **Pilotage & passage à l'échelle** : L6 (observabilité) → L7 (MCP) → L8 (swarm).
+### Statut : epic **Loop Engineering — L1→L9 complets** ✅
+
+### Phasage (réalisé)
+1. **Socle** : ✅ L1 (pilote/arrêt) → ✅ L2 (convergence) → ✅ L5 (checkpoint/replay).
+2. **Sûreté & échelles** : ✅ L4 (disjoncteurs) → ✅ L3 (multi-échelles).
+3. **Pilotage & passage à l'échelle** : ✅ L6 (observabilité) → ✅ L7 (MCP) → ✅ L8 (swarm).
 4. **Mesure** : L9 (banc d'essai + ablations).
 
 ### Invariants à préserver

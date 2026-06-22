@@ -73,6 +73,7 @@ pub mod sha256;
 pub mod state;
 pub mod substrate;
 pub mod surface;
+pub mod swarm;
 
 pub use agent::{RSIAgent, StepReport};
 pub use api::{ApiResult, RsiApi};
@@ -85,6 +86,7 @@ pub use convergence::{ConvergenceDetector, Trend};
 pub use criticality::{RiskConfig, RiskModel, RiskReport, RiskSignals};
 pub use loop_ctrl::{LoopConfig, LoopObserver, LoopOutcome, StopReason};
 pub use schedule::{LoopSchedule, MetaMeta};
+pub use swarm::{run_swarm, run_swarm_demo, SwarmMember, SwarmResult};
 #[cfg(feature = "forge")]
 pub use forge_meta::ForgeMetaSearch;
 #[cfg(feature = "forge")]
