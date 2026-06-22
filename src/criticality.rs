@@ -225,9 +225,8 @@ mod tests {
     #[test]
     fn rpn_in_unit_interval_and_argmax() {
         let model = RiskModel::new();
-        let mut s = RiskSignals::default();
-        s.delta_norm = 0.5; // ‖ΔS‖ = λ → instabilité max
-        s.lambda = 0.5;
+        // ‖ΔS‖ = λ → instabilité max
+        let s = RiskSignals { delta_norm: 0.5, lambda: 0.5, ..Default::default() };
         let r = model.assess(&s);
         assert!(r.modes.iter().all(|m| (0.0..=1.0).contains(&m.rpn)));
         assert!((0.0..=1.0).contains(&r.risk_global));
@@ -239,9 +238,8 @@ mod tests {
     #[test]
     fn value_drift_dominates_when_unaligned() {
         let model = RiskModel::new();
-        let mut s = RiskSignals::default();
-        s.autonomy = 0.9;
-        s.alignment = 0.1; // forte autonomie, faible alignement
+        // forte autonomie, faible alignement
+        let s = RiskSignals { autonomy: 0.9, alignment: 0.1, ..Default::default() };
         let r = model.assess(&s);
         assert_eq!(r.most_critical, modes::VALUE_DRIFT);
     }
@@ -249,9 +247,7 @@ mod tests {
     #[test]
     fn si_safe_penalizes_risk() {
         let model = RiskModel::new();
-        let mut s = RiskSignals::default();
-        s.autonomy = 0.9;
-        s.alignment = 0.0;
+        let s = RiskSignals { autonomy: 0.9, alignment: 0.0, ..Default::default() };
         let r = model.assess(&s);
         let safe = model.si_safe(0.5, &r, 1.0);
         assert!(safe < 0.5, "SI_safe doit être pénalisé : {safe}");
@@ -260,9 +256,7 @@ mod tests {
     #[test]
     fn substrate_collapse_when_low_peff_and_bound() {
         let model = RiskModel::new();
-        let mut s = RiskSignals::default();
-        s.p_eff = 0.05;
-        s.frac_limited_by_substrate = 1.0;
+        let s = RiskSignals { p_eff: 0.05, frac_limited_by_substrate: 1.0, ..Default::default() };
         let r = model.assess(&s);
         let sub = r
             .modes

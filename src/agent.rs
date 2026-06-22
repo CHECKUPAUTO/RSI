@@ -278,11 +278,11 @@ impl RSIAgent {
 
         // §A — warm-start mémoire : rappeler les contextes proches et réinjecter
         // les stratégies ℳ passées performantes comme graines.
-        if self.memory.is_some() {
+        if let Some(mem) = self.memory.as_ref() {
             let query = self.state_embedding();
             let n_o = self.substrate.o.len();
-            let recalled = self.memory.as_ref().unwrap().recall(&query, self.recall_k);
-            let seeds: Vec<MetaStrategy> = recalled
+            let seeds: Vec<MetaStrategy> = mem
+                .recall(&query, self.recall_k)
                 .iter()
                 .filter_map(|p| decode_strategy_payload(p).map(|(_, s)| s))
                 .filter(|s| s.software_edit.len() == n_o)
@@ -293,7 +293,7 @@ impl RSIAgent {
         }
 
         // §C — la méta-révision n'est exécutée que tous les `meta_interval` pas.
-        if self.t % self.meta_interval == 0 {
+        if self.t.is_multiple_of(self.meta_interval) {
             let (best_strategy, _proj_si) =
                 self.meta
                     .revise(&self.strategy, &self.state, &self.substrate, &self.surface);
@@ -356,7 +356,7 @@ impl RSIAgent {
         let substrate_is_critical = pre_bottleneck.frac_limited_by_substrate >= self.route_threshold
             || pre_risk.most_critical == crate::criticality::modes::SUBSTRATE_COLLAPSE;
         // §L3 — cadence : on n'améliore le substrat qu'un pas sur substrate_interval
-        let substrate_due = self.t % self.substrate_interval == 0;
+        let substrate_due = self.t.is_multiple_of(self.substrate_interval);
         if substrate_is_critical && substrate_due {
             if let Some(opt) = self.substrate_opt.as_mut() {
                 let improved = opt.improve(&substrate);

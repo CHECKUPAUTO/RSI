@@ -210,6 +210,48 @@ Formalisation, implémentation et résultats expérimentaux :
 [`paper/rsi.md`](paper/rsi.md) (Markdown) et [`paper/rsi.tex`](paper/rsi.tex)
 (source LaTeX).
 
+## Agent d'auto-amélioration (génère → évalue → améliore)
+
+RSI peut **générer des algorithmes candidats puis les améliorer** en boucle
+élitiste bornée — *sans jamais régresser*. Ce travail consomme le contrat
+documenté de `scirust-rsi` (RefineTask / Guard / ascend / Report).
+
+```bash
+cargo run --release --example self_improve   # synthèse symbolique : reconstruit x²+1
+```
+
+Exemple de sortie : la fitness monte `-0.01 → 0.30 → 0.41 → 0.89` puis se
+stabilise (patience), 100 % des cas de test réussis, `is_monotone() == true`.
+
+- **Évaluateur** (`SymbolicSynthesis::score`) : fraction de cas de test réussis
+  (|sortie − cible| ≤ tolérance) **moins** une pénalité de complexité (taille
+  de l'AST).
+- **Générateur** (`refine`) : meilleure de `λ` mutations déterministes (révision
+  « critiquée », façon 1+λ).
+- **Pilote** ([`ascent::ascend`] + [`Guard`]) : `max_iters`, `patience`,
+  `target`, `min_delta`.
+
+### Contrat de sûreté
+- **Sandbox** : le « code » candidat est un **AST arithmétique évalué par mon
+  propre interpréteur** (`Expr::eval`) — **jamais** compilé ni exécuté comme du
+  code arbitraire, **aucun sous-processus**. L'évaluateur ne renvoie que des
+  nombres ; le moteur ne voit jamais le code.
+- **Non-régression (élitisme)** : une révision n'est adoptée que si sa fitness
+  dépasse *strictement* l'incumbent ⇒ `Report::is_monotone()` vrai.
+- **Bornage / terminaison** : au plus `max_iters` itérations.
+- **Déterminisme** : entièrement piloté par une graine reproductible.
+
+> **Statut d'intégration `scirust-rsi`.** Le dépôt `CHECKUPAUTO/scirust` n'est
+> **pas accessible dans l'environnement actuel** (proxy git non autorisé, MCP
+> restreint à `checkupauto/rsi`), donc la dépendance
+> `scirust-rsi = { git = … }` ne peut pas être récupérée ni compilée ici. Le
+> module [`src/ascent.rs`](src/ascent.rs) est un **pilote local *stand-in*** qui
+> **reproduit fidèlement le contrat documenté** (mêmes noms : `RefineTask`,
+> `Guard`, `ascend`, `Report::is_monotone`). Dès que `scirust` est autorisé,
+> l'intégration réelle se fait en remplaçant `crate::ascent::*` par
+> `scirust_rsi::*` — le domaine (sandbox / évaluateur / générateur de
+> [`src/synthesis.rs`](src/synthesis.rs)) se branche tel quel.
+
 ## Architecture
 
 ```

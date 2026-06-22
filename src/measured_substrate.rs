@@ -81,7 +81,7 @@ impl MeasuredSubstrate {
         MeasuredSubstrate { n: n.max(16), reps: 3, best_speedup: 1.0, anchor: None }
     }
 
-    fn median_time(&self, run: impl Fn() -> ()) -> f64 {
+    fn median_time(&self, run: impl Fn()) -> f64 {
         let mut ts: Vec<f64> = (0..self.reps)
             .map(|_| {
                 let t0 = Instant::now();

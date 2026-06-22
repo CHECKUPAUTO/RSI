@@ -79,6 +79,7 @@ impl Json {
 
     // --- sérialisation -------------------------------------------------- //
     /// Sérialisation compacte.
+    #[allow(clippy::inherent_to_string)] // sérialiseur JSON dédié, pas un Display
     pub fn to_string(&self) -> String {
         let mut out = String::new();
         self.write(&mut out);

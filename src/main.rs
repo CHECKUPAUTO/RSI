@@ -71,8 +71,8 @@ fn main() {
     );
     println!();
     println!(
-        "{:>4} │ {:>8} │ {:>8} │ {:>7} │ {:>7} │ {:>6} │ {}",
-        "t", "SI_glob", "ΔSI", "P_eff", "‖ΔS‖", "%subst", "capacités (D M R A C V)"
+        "{:>4} │ {:>8} │ {:>8} │ {:>7} │ {:>7} │ {:>6} │ capacités (D M R A C V)",
+        "t", "SI_glob", "ΔSI", "P_eff", "‖ΔS‖", "%subst"
     );
     println!("{}", "─".repeat(96));
 
