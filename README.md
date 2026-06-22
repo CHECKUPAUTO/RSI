@@ -46,6 +46,13 @@ agents. Au prochain démarrage, ils disposent des outils `rsi_*` (`rsi_create`,
 | **§5** Boucle discrète + méta | `S_{t+1}=S_t+ℳ(…)+ΔS_appr`, `ℳ_{t+1}=argmax_ℳ SI_global(ℳ(S_t))` | [`src/meta.rs`](src/meta.rs) |
 | **§6** Forme compacte (onde) | `Σ_I(t+1)=Σ_I(t)+η·ℳ−P` | [`src/agent.rs`](src/agent.rs) |
 
+> **Portée de l'invariant de non-régression.** `SI(t+1) ≥ SI(t) − ε` est garanti
+> par line search sur le **pas combiné** (méta ℳ + apprentissage ΔS_appr), *sauf*
+> lorsqu'un **override de sûreté explicite** se déclenche (p. ex. `trust_floor`
+> anti-wireheading, qui abaisse délibérément `P_eff`) : dans ce cas la régression
+> est assumée au nom de la sûreté. Hors override, l'invariant est appliqué activement
+> (cf. `RSIAgent::step`, §4bis), pas seulement émergent.
+
 ## Modèle
 
 1. **Espace des tâches** `(Ω,𝒜,μ)` : Ω est échantillonné une fois par

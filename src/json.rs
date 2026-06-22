@@ -56,11 +56,17 @@ impl Json {
     }
 
     pub fn as_u64(&self) -> Option<u64> {
-        self.as_f64().map(|n| n as u64)
+        // Rejette NaN, ±∞ et négatifs au lieu de saturer silencieusement à 0
+        // (`-1.0 as u64 == 0`, `NaN as u64 == 0`).
+        self.as_f64()
+            .filter(|n| n.is_finite() && *n >= 0.0)
+            .map(|n| n as u64)
     }
 
     pub fn as_usize(&self) -> Option<usize> {
-        self.as_f64().map(|n| n as usize)
+        self.as_f64()
+            .filter(|n| n.is_finite() && *n >= 0.0)
+            .map(|n| n as usize)
     }
 
     pub fn as_bool(&self) -> Option<bool> {
@@ -399,5 +405,19 @@ mod tests {
     fn accepts_reasonable_nesting() {
         let ok = format!("{}{}", "[".repeat(64), "]".repeat(64));
         assert!(Json::parse(&ok).is_ok());
+    }
+
+    #[test]
+    fn unsigned_accessors_reject_negative_and_nan() {
+        // valeurs valides : conversion normale
+        assert_eq!(Json::Num(5.0).as_u64(), Some(5));
+        assert_eq!(Json::Num(5.9).as_usize(), Some(5));
+        assert_eq!(Json::Num(0.0).as_u64(), Some(0));
+        // négatifs : None au lieu de saturer silencieusement à 0
+        assert_eq!(Json::Num(-1.0).as_u64(), None);
+        assert_eq!(Json::Num(-5.0).as_usize(), None);
+        // non-finis : None
+        assert_eq!(Json::Num(f64::NAN).as_u64(), None);
+        assert_eq!(Json::Num(f64::INFINITY).as_usize(), None);
     }
 }

@@ -15,29 +15,51 @@
 //! Lancement : `cargo run --release --bin rsi-mcp` puis dialogue JSON-RPC
 //! ligne par ligne sur stdin/stdout.
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 
 use rsi::api::RsiApi;
 use rsi::json::Json;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
+/// Plafond de taille d'une requête (une ligne JSON-RPC). Un client hostile
+/// pourrait sinon envoyer une ligne de plusieurs Go et provoquer un OOM avant
+/// même le parsing.
+const MAX_LINE_BYTES: usize = 16 * 1024 * 1024; // 16 Mio
+
 fn main() {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = stdout.lock();
+    let mut reader = stdin.lock();
     let mut api = RsiApi::new();
 
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(l) => l,
+    let mut buf = Vec::with_capacity(4096);
+    loop {
+        buf.clear();
+        // Lecture *bornée* d'une ligne : `take` plafonne CETTE lecture à
+        // MAX_LINE_BYTES octets (anti-OOM sur ligne géante).
+        let n = match (&mut reader).take(MAX_LINE_BYTES as u64).read_until(b'\n', &mut buf) {
+            Ok(0) => break, // EOF
+            Ok(n) => n,
             Err(_) => break,
         };
-        if line.trim().is_empty() {
+        // Limite atteinte sans fin de ligne ⇒ requête trop grande : on refuse et
+        // on coupe proprement (drainer le reste risquerait l'OOM qu'on évite).
+        if n >= MAX_LINE_BYTES && buf.last() != Some(&b'\n') {
+            let resp = error_response(&Json::Null, -32600, "request line exceeds 16 MiB limit");
+            let _ = writeln!(out, "{}", resp.to_string());
+            let _ = out.flush();
+            break;
+        }
+
+        let line = String::from_utf8_lossy(&buf);
+        let line = line.trim();
+        if line.is_empty() {
             continue;
         }
 
-        let response = match Json::parse(&line) {
+        let response = match Json::parse(line) {
             Ok(req) => handle_request(&mut api, &req),
             Err(e) => Some(error_response(&Json::Null, -32700, &format!("parse error: {e}"))),
         };

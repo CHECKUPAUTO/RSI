@@ -138,7 +138,9 @@ impl MetaStrategy {
         let sum: f64 = exps.iter().sum::<f64>().max(1e-12);
         let focus: [f64; 6] = std::array::from_fn(|i| exps[i] / sum);
 
-        let gain = GAIN_LO + (GAIN_HI - GAIN_LO) * sigmoid(theta[6]);
+        // Bornes identiques à `encode` ⇒ roundtrip idempotent jusqu'aux extrêmes.
+        let gain = (GAIN_LO + (GAIN_HI - GAIN_LO) * sigmoid(theta[6]))
+            .clamp(GAIN_LO + 1e-6, GAIN_HI - 1e-6);
         let software_edit = theta[7..7 + n_software].to_vec();
         MetaStrategy { focus, software_edit, gain }
     }
@@ -383,5 +385,20 @@ mod tests {
         }
         assert!((s.gain - d.gain).abs() < 1e-6);
         assert_eq!(s.software_edit, d.software_edit);
+    }
+
+    #[test]
+    fn decode_gain_stays_within_encode_bounds() {
+        // decode borne désormais le gain dans le même domaine qu'encode :
+        // le roundtrip est idempotent même pour des θ extrêmes.
+        for &theta6 in &[-50.0_f64, -1.0, 0.0, 1.0, 50.0] {
+            let theta = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, theta6, 0.0];
+            let d = MetaStrategy::decode(&theta, 1);
+            assert!(d.gain >= GAIN_LO + 1e-6, "gain {} sous la borne", d.gain);
+            assert!(d.gain <= GAIN_HI - 1e-6, "gain {} au-dessus de la borne", d.gain);
+            // idempotence : re-encoder puis re-décoder ne bouge plus le gain.
+            let d2 = MetaStrategy::decode(&d.encode(), 1);
+            assert!((d.gain - d2.gain).abs() < 1e-9, "roundtrip {} vs {}", d.gain, d2.gain);
+        }
     }
 }

@@ -263,6 +263,8 @@ impl RSIAgent {
     /// Un pas de la boucle discrète RSI (avec criticité §7 et optimisations A/C/D).
     pub fn step(&mut self) -> StepReport {
         let si_before = self.si_global();
+        // État de début de pas (référence du garde-fou de non-régression combiné).
+        let state_before = self.state.clone();
 
         // §2bis — ingestion de connaissances réelles : fait tendre D vers le
         // niveau appris (la hausse de D nourrit ensuite L(D) dans la dynamique).
@@ -380,7 +382,39 @@ impl RSIAgent {
 
         // 3) ΔS_appr : apprentissage via la dynamique continue contrainte (§4)
         let dynamics = Dynamics::new(&self.surface, self.dynamics_cfg);
-        let (next_state, appr) = dynamics.constrained_step(&state_after_meta, &substrate, 1.0);
+        let (mut next_state, appr) = dynamics.constrained_step(&state_after_meta, &substrate, 1.0);
+
+        // §4bis — GARDE-FOU DE NON-RÉGRESSION SUR LE PAS COMBINÉ (ℳ + apprentissage).
+        // `constrained_step` ne protège que l'étape d'apprentissage ; le `meta_delta`
+        // de ℳ peut, lui, faire régresser SI. Hors override de sûreté explicite (une
+        // mitigation a délibérément troqué du SI contre de la sûreté — p. ex.
+        // `trust_floor` qui abaisse P_eff), on atténue le pas combiné — depuis l'état
+        // de début de pas — jusqu'à respecter SI(t+1) ≥ SI(t) − ε. Sous override, la
+        // régression est assumée et le garde-fou est volontairement court-circuité.
+        if mitigation == "none" {
+            let eps_eff = if self.dynamics_cfg.adaptive_epsilon {
+                let (_, se) = self.surface.si_global_stats(&state_before, &self.substrate);
+                self.dynamics_cfg.epsilon + self.dynamics_cfg.epsilon_z * se
+            } else {
+                self.dynamics_cfg.epsilon
+            };
+            let mut si_combined = self.surface.si_global(&next_state, &substrate);
+            if si_combined < si_before - eps_eff {
+                let combined_delta = next_state.sub(&state_before);
+                let mut factor = 1.0;
+                let mut tries = 0u32;
+                while si_combined < si_before - eps_eff && tries < 20 {
+                    factor *= 0.5;
+                    next_state = state_before.add(&combined_delta.scaled(factor)).clipped(0.0, 1.0);
+                    si_combined = self.surface.si_global(&next_state, &substrate);
+                    tries += 1;
+                }
+                // Sécurité : si même un pas infinitésimal régresse, on reste sur place.
+                if si_combined < si_before - eps_eff {
+                    next_state = state_before.clone();
+                }
+            }
+        }
 
         // 4) commit de l'état
         self.state = next_state;
@@ -483,6 +517,24 @@ mod tests {
         for r in &reports {
             // garde-fou de non-régression appliqué à l'étape d'apprentissage
             assert!(r.appr.si_after >= r.appr.si_before - eps - 1e-9);
+        }
+    }
+
+    #[test]
+    fn combined_step_non_regression_when_no_override() {
+        // §4bis — hors override de sûreté (mitigation == "none"), le PAS COMBINÉ
+        // (ℳ + apprentissage) respecte SI(t+1) ≥ SI(t) − ε. (demo : ε non adaptatif.)
+        let mut agent = RSIAgent::demo(2026);
+        let eps = agent.dynamics_cfg.epsilon;
+        for r in agent.run(60) {
+            if r.mitigation == "none" {
+                assert!(
+                    r.delta_si >= -eps - 1e-9,
+                    "régression combinée non protégée: ΔSI={} (mitigation={})",
+                    r.delta_si,
+                    r.mitigation
+                );
+            }
         }
     }
 

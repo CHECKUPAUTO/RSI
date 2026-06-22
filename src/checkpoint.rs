@@ -17,7 +17,7 @@ use crate::agent::RSIAgent;
 use crate::json::Json;
 use crate::linalg::Matrix;
 use crate::meta::MetaStrategy;
-use crate::state::{CognitiveState, Dims};
+use crate::state::CognitiveState;
 use crate::substrate::Substrate;
 
 /// Instantané reprenable de l'état macro d'un agent.
@@ -136,15 +136,15 @@ impl Checkpoint {
             gain: stj.get("gain").and_then(|v| v.as_f64()).unwrap_or(0.05),
         };
 
-        // validation de cohérence dimensionnelle minimale
-        let _ = Dims {
-            d: state.d.len(),
-            m: state.m.len(),
-            r: state.r.len(),
-            a: state.a.len(),
-            c: state.c.len(),
-            v: state.v.len(),
-        };
+        // Cohérence interne minimale : aucune composante d'état vide (sinon panic
+        // ultérieur dans les moyennes / indexations de la surface). La cohérence
+        // avec une surface *donnée* est vérifiée par `RSIAgent::try_restore`.
+        if [&state.d, &state.m, &state.r, &state.a, &state.c, &state.v]
+            .iter()
+            .any(|comp| comp.is_empty())
+        {
+            return Err("state : composante vide".into());
+        }
         Ok(Checkpoint { t, state, substrate, strategy })
     }
 
@@ -176,6 +176,49 @@ impl RSIAgent {
         self.substrate = cp.substrate.clone();
         self.strategy = cp.strategy.clone();
         self.t = cp.t;
+    }
+
+    /// Restaure **en validant** la cohérence dimensionnelle du checkpoint avec
+    /// l'agent courant (surface/substrat). Renvoie `Err` au lieu de laisser un
+    /// checkpoint incohérent provoquer un panic différé (p. ex. indexation hors
+    /// borne dans `si_global`). À préférer pour tout checkpoint *désérialisé*
+    /// (`from_json` / `load`) ; `restore` reste le chemin direct pour le rollback
+    /// d'un snapshot pris sur le *même* agent (dimensions garanties identiques).
+    pub fn try_restore(&mut self, cp: &Checkpoint) -> Result<(), String> {
+        let want = [
+            self.state.d.len(),
+            self.state.m.len(),
+            self.state.r.len(),
+            self.state.a.len(),
+            self.state.c.len(),
+            self.state.v.len(),
+        ];
+        let got = [
+            cp.state.d.len(),
+            cp.state.m.len(),
+            cp.state.r.len(),
+            cp.state.a.len(),
+            cp.state.c.len(),
+            cp.state.v.len(),
+        ];
+        if got != want {
+            return Err(format!(
+                "dimensions d'état du checkpoint {got:?} incohérentes avec l'agent {want:?}"
+            ));
+        }
+        if cp.substrate.h.len() != self.substrate.h.len()
+            || cp.substrate.o.len() != self.substrate.o.len()
+        {
+            return Err(format!(
+                "dimensions substrat du checkpoint (h={}, o={}) incohérentes avec l'agent (h={}, o={})",
+                cp.substrate.h.len(),
+                cp.substrate.o.len(),
+                self.substrate.h.len(),
+                self.substrate.o.len()
+            ));
+        }
+        self.restore(cp);
+        Ok(())
     }
 }
 
@@ -227,5 +270,30 @@ mod tests {
         assert!((resumed.si_global() - si_mid).abs() < 1e-9);
         resumed.run(30);
         assert!(resumed.si_global() >= si_mid);
+    }
+
+    #[test]
+    fn try_restore_rejects_mismatched_dims() {
+        let mut agent = RSIAgent::demo(2026);
+        agent.run(5);
+        // checkpoint cohérent : accepté
+        let good = agent.snapshot();
+        assert!(agent.try_restore(&good).is_ok());
+        // checkpoint corrompu (composante d'état tronquée) : refusé proprement
+        // au lieu de provoquer un panic différé dans `si_global`.
+        let mut bad = agent.snapshot();
+        bad.state.d.pop();
+        let err = agent.try_restore(&bad).unwrap_err();
+        assert!(err.contains("dimensions"), "msg = {err}");
+    }
+
+    #[test]
+    fn from_json_rejects_empty_state_component() {
+        let mut agent = RSIAgent::demo(1);
+        agent.run(3);
+        let mut cp = agent.snapshot();
+        cp.state.r.clear();
+        let err = Checkpoint::from_json(&cp.to_json()).unwrap_err();
+        assert!(err.contains("vide"), "msg = {err}");
     }
 }

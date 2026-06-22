@@ -173,6 +173,16 @@ impl PapersKnowledge {
     /// Exécute `papers <subcommand> <source> <extra…>` ; renvoie sa sortie
     /// standard si le processus réussit avec une sortie non triviale.
     fn run_papers(&self, source: &str) -> Option<String> {
+        use std::io::Read;
+        use std::process::Stdio;
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        // Garde-fous : un binaire `papers` hostile ou bogué ne doit ni bloquer
+        // indéfiniment ni épuiser la RAM en remplissant stdout.
+        const TIMEOUT: Duration = Duration::from_secs(30);
+        const MAX_OUTPUT: u64 = 8 * 1024 * 1024; // 8 Mio
+
         let mut cmd = std::process::Command::new(&self.bin);
         if !self.subcommand.is_empty() {
             cmd.arg(&self.subcommand);
@@ -181,16 +191,54 @@ impl PapersKnowledge {
         for a in &self.extra_args {
             cmd.arg(a);
         }
-        match cmd.output() {
-            Ok(out) if out.status.success() => {
-                let text = String::from_utf8_lossy(&out.stdout).into_owned();
-                if text.trim().len() >= 8 {
-                    Some(text)
-                } else {
-                    None
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::null());
+
+        let mut child = cmd.spawn().ok()?;
+
+        // Lecture *bornée* de stdout dans un thread dédié : évite un blocage si le
+        // process remplit le tampon du pipe, et plafonne la mémoire capturée.
+        let stdout = child.stdout.take()?;
+        let (tx, rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stdout.take(MAX_OUTPUT).read_to_end(&mut buf);
+            let _ = tx.send(buf);
+        });
+
+        // Attente *bornée* de la fin du process (sondage léger, std-only).
+        let deadline = Instant::now() + TIMEOUT;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break None; // timeout ⇒ dégradation propre
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
                 }
             }
-            _ => None,
+        };
+
+        let buf = rx.recv_timeout(Duration::from_secs(1)).unwrap_or_default();
+        let _ = reader.join();
+
+        if !status.map(|s| s.success()).unwrap_or(false) {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&buf).into_owned();
+        if text.trim().len() >= 8 {
+            Some(text)
+        } else {
+            None
         }
     }
 }

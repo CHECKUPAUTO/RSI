@@ -82,7 +82,12 @@ impl<'a> Dynamics<'a> {
     pub fn eta(&self, state: &CognitiveState, substrate: &Substrate) -> f64 {
         let p_eff = substrate.effective_power();
         let memory = mean(&state.c);
-        let saturation = (1.0 - mean(&state.to_vector())).clamp(0.0, 1.0);
+        // Saturation des *compétences* (D, M, R) uniquement — ni A/V (autonomie,
+        // valeurs, qui ne sont pas des compétences saturantes) ni C (mémoire, déjà
+        // prise en compte ci-dessus). Tableau sur la pile : aucune allocation
+        // (η est appelé jusqu'à 20× par pas dans la line search).
+        let competence = mean(&[mean(&state.d), mean(&state.m), mean(&state.r)]);
+        let saturation = (1.0 - competence).clamp(0.0, 1.0);
         self.config.eta0 * p_eff * (0.5 + 0.5 * memory) * saturation
     }
 
