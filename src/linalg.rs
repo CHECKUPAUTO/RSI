@@ -1,5 +1,8 @@
 //! Petites primitives d'algèbre linéaire (std-only) : vecteurs, matrices
 //! denses, formes quadratiques xᵀMx, et la sigmoïde σ utilisée partout.
+//
+// Boucles indexées intentionnelles (produits matrice/vecteur), lint désactivé.
+#![allow(clippy::needless_range_loop)]
 
 /// σ(x) = 1 / (1 + e⁻ˣ), implémentation numériquement stable.
 #[inline]

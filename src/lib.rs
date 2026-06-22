@@ -43,6 +43,7 @@
 
 pub mod agent;
 pub mod api;
+pub mod ascent;
 pub mod audit;
 #[cfg(feature = "ccos")]
 pub mod ccos_audit;
@@ -74,10 +75,13 @@ pub mod state;
 pub mod substrate;
 pub mod surface;
 pub mod swarm;
+pub mod synthesis;
 
 pub use agent::{RSIAgent, StepReport};
 pub use api::{ApiResult, RsiApi};
+pub use ascent::{ascend, Guard, RefineTask, Report, StopReason as AscentStop};
 pub use audit::{AuditEvent, AuditLog, HashChainLog, TraceEvent};
+pub use synthesis::{Expr, SymbolicSynthesis};
 #[cfg(feature = "ccos")]
 pub use ccos_audit::CcosAudit;
 pub use checkpoint::Checkpoint;

@@ -8,6 +8,9 @@
 //!
 //! Sert de méta-optimiseur alternatif à la recherche aléatoire pour la
 //! méta-révision `ℳ_{t+1} = argmax_ℳ SI_global(ℳ(S_t))` (§5).
+//
+// Boucles indexées intentionnelles (algèbre vectorielle), lint stylistique désactivé.
+#![allow(clippy::needless_range_loop)]
 
 use crate::rng::Rng;
 
