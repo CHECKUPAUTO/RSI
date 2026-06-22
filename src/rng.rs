@@ -25,6 +25,16 @@ impl Rng {
         }
     }
 
+    /// État interne brut (pour sérialisation / reprise déterministe).
+    pub fn state(&self) -> [u64; 4] {
+        self.s
+    }
+
+    /// Reconstruit un RNG depuis un état brut.
+    pub fn from_state(s: [u64; 4]) -> Self {
+        Rng { s }
+    }
+
     #[inline]
     fn next_u64(&mut self) -> u64 {
         let result = self.s[1]

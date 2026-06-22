@@ -46,6 +46,7 @@ pub mod api;
 pub mod audit;
 #[cfg(feature = "ccos")]
 pub mod ccos_audit;
+pub mod checkpoint;
 pub mod cma;
 pub mod convergence;
 pub mod criticality;
@@ -77,6 +78,7 @@ pub use api::{ApiResult, RsiApi};
 pub use audit::{AuditEvent, AuditLog, HashChainLog, TraceEvent};
 #[cfg(feature = "ccos")]
 pub use ccos_audit::CcosAudit;
+pub use checkpoint::Checkpoint;
 pub use cma::SepCmaEs;
 pub use convergence::{ConvergenceDetector, Trend};
 pub use criticality::{RiskConfig, RiskModel, RiskReport, RiskSignals};

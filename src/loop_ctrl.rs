@@ -26,6 +26,12 @@ pub struct LoopConfig {
     pub stop_on_divergence: bool,
     /// budget de temps optionnel (secondes).
     pub max_seconds: Option<f64>,
+    /// **disjoncteur de criticité (L4)** : si `max_rpn` d'un pas dépasse ce
+    /// seuil, la boucle s'arrête (`CircuitBreaker`). `None` = désactivé.
+    pub breaker_rpn: Option<f64>,
+    /// en cas de déclenchement du disjoncteur, restaure le dernier état sain
+    /// (rollback) avant d'arrêter.
+    pub rollback_on_breach: bool,
 }
 
 impl Default for LoopConfig {
@@ -37,6 +43,8 @@ impl Default for LoopConfig {
             plateau_eps: 1e-4,
             stop_on_divergence: true,
             max_seconds: None,
+            breaker_rpn: None,
+            rollback_on_breach: false,
         }
     }
 }
@@ -49,6 +57,8 @@ pub enum StopReason {
     Plateau,
     Diverged,
     Timeout,
+    /// disjoncteur de criticité déclenché (L4).
+    CircuitBreaker,
 }
 
 /// Résultat d'un run piloté.
@@ -69,12 +79,30 @@ impl RSIAgent {
         let mut det = ConvergenceDetector::new(cfg.plateau_window);
         let mut reports = Vec::new();
         let mut reason = StopReason::MaxSteps;
+        // dernier état sain (pour rollback du disjoncteur L4)
+        let mut last_good = self.snapshot();
 
         for _ in 0..cfg.max_steps {
             let r = self.step();
             det.push(r.si_global);
             let si = r.si_global;
+            let max_rpn = r.max_rpn;
             reports.push(r);
+
+            // §L4 — disjoncteur de criticité
+            if let Some(thr) = cfg.breaker_rpn {
+                if max_rpn > thr {
+                    if cfg.rollback_on_breach {
+                        self.restore(&last_good); // retour au dernier état sain
+                    }
+                    reason = StopReason::CircuitBreaker;
+                    break;
+                }
+                // mémorise l'état comme « sain » tant qu'on est loin du seuil
+                if max_rpn < 0.5 * thr {
+                    last_good = self.snapshot();
+                }
+            }
 
             if let Some(t) = cfg.target_si {
                 if si >= t {
@@ -140,6 +168,22 @@ mod tests {
         assert_eq!(out.reason, StopReason::Plateau);
         assert!(out.steps < 2000, "doit s'arrêter au plateau, pas au budget");
         assert!(out.final_slope.abs() < 1e-3);
+    }
+
+    #[test]
+    fn circuit_breaker_trips_and_rolls_back() {
+        let mut agent = RSIAgent::demo(2026);
+        let cfg = LoopConfig {
+            max_steps: 400,
+            breaker_rpn: Some(0.1), // seuil bas → déclenchement garanti
+            rollback_on_breach: true,
+            plateau_window: 9999, // neutralise l'arrêt plateau
+            ..LoopConfig::default()
+        };
+        let out = agent.run_until(&cfg);
+        assert_eq!(out.reason, StopReason::CircuitBreaker);
+        // rollback : l'état de l'agent est revenu en deçà du dernier pas exécuté
+        assert!(agent.t < out.steps, "rollback doit ramener t en arrière");
     }
 
     #[test]
