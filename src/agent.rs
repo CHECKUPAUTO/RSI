@@ -694,4 +694,34 @@ mod tests {
         // même graine + même trajectoire ⇒ même hash de tête (reproductibilité)
         assert_eq!(run(), run());
     }
+
+    /// Property-based test *in-tree* : sur un large balayage de graines, chaque
+    /// `StepReport` respecte les bornes de cohérence du modèle. Cible : 0 échec.
+    #[test]
+    fn report_invariants_hold_over_many_seeds() {
+        use crate::rng::Rng;
+        let mut agent_seed = Rng::new(2026);
+        for _ in 0..250 {
+            let seed = (agent_seed.uniform_range(0.0, 1e9) as u64).wrapping_add(1);
+            let mut agent = RSIAgent::demo(seed);
+            let lam = agent.dynamics_cfg.lambda;
+            let eps = agent.dynamics_cfg.epsilon;
+            for r in agent.run(25) {
+                assert!(r.appr.delta_norm <= lam + 1e-9, "‖ΔS‖={} > λ", r.appr.delta_norm);
+                assert!((0.0..=1.0).contains(&r.si_global), "SI_global={}", r.si_global);
+                assert!(r.p_eff > 0.0 && r.p_eff < 1.0, "P_eff={}", r.p_eff);
+                assert!((0.0..=1.0).contains(&r.risk_global), "risk_global={}", r.risk_global);
+                assert!((0.0..=1.0).contains(&r.max_rpn), "max_rpn={}", r.max_rpn);
+                assert!(
+                    r.capabilities.iter().all(|c| (0.0..=1.0).contains(c)),
+                    "capabilities hors [0,1]: {:?}",
+                    r.capabilities
+                );
+                // non-régression du pas combiné hors override de sûreté
+                if r.mitigation == "none" {
+                    assert!(r.delta_si >= -eps - 1e-9, "ΔSI={} < −ε", r.delta_si);
+                }
+            }
+        }
+    }
 }
