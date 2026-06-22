@@ -241,16 +241,23 @@ stabilise (patience), 100 % des cas de test réussis, `is_monotone() == true`.
 - **Bornage / terminaison** : au plus `max_iters` itérations.
 - **Déterminisme** : entièrement piloté par une graine reproductible.
 
-> **Statut d'intégration `scirust-rsi`.** Le dépôt `CHECKUPAUTO/scirust` n'est
-> **pas accessible dans l'environnement actuel** (proxy git non autorisé, MCP
-> restreint à `checkupauto/rsi`), donc la dépendance
-> `scirust-rsi = { git = … }` ne peut pas être récupérée ni compilée ici. Le
-> module [`src/ascent.rs`](src/ascent.rs) est un **pilote local *stand-in*** qui
-> **reproduit fidèlement le contrat documenté** (mêmes noms : `RefineTask`,
-> `Guard`, `ascend`, `Report::is_monotone`). Dès que `scirust` est autorisé,
-> l'intégration réelle se fait en remplaçant `crate::ascent::*` par
-> `scirust_rsi::*` — le domaine (sandbox / évaluateur / générateur de
-> [`src/synthesis.rs`](src/synthesis.rs)) se branche tel quel.
+> **Statut d'intégration `scirust-rsi`.** Deux modes coexistent :
+> - **Stand-in hors-ligne** (actif par défaut, testé) : [`src/ascent.rs`](src/ascent.rs)
+>   reproduit fidèlement le contrat (`RefineTask`, `Guard`, `ascend`,
+>   `Report::is_monotone`). C'est ce que lance `--example self_improve`.
+> - **Moteur réel** (prêt, à activer) : [`src/scirust_bridge.rs`](src/scirust_bridge.rs)
+>   implémente le **vrai** trait `scirust_rsi::refine::RefineTask`
+>   (`type Solution`, `initial`/`score → Fitness`/`refine(&self, _, &mut StdRng)`)
+>   et pilote la boucle avec `SelfRefiner::new(seed).run(&task, &Guard)`,
+>   conformément à `scirust-rsi/INTEGRATION.md`.
+>
+> La dépendance `scirust-rsi = { git = … }` **casse `cargo build` tant que
+> `CHECKUPAUTO/scirust` n'est pas joignable** (échec de résolution du lockfile,
+> même en `optional`) — non autorisé dans l'environnement d'exécution actuel. Le
+> pont est donc livré derrière la feature `scirust` (déclarée vide pour rester
+> compilable hors-ligne). Activation en 3 étapes :
+> [`SCIRUST_ACTIVATION.md`](SCIRUST_ACTIVATION.md), puis
+> `cargo run --features scirust --release --example self_improve_real`.
 
 ## Architecture
 
