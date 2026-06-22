@@ -59,7 +59,23 @@ pub enum StopReason {
     Timeout,
     /// disjoncteur de criticité déclenché (L4).
     CircuitBreaker,
+    /// arrêt demandé par l'observateur (veto human-in-the-loop, L6).
+    Vetoed,
 }
+
+/// ⚙️ **L6 — plan de contrôle observable**. Observateur recevant chaque
+/// transition de boucle ; peut **véto**er la poursuite (human-in-the-loop).
+pub trait LoopObserver {
+    /// Appelé après chaque pas. Retourne `false` pour **arrêter** la boucle.
+    fn on_step(&mut self, _report: &StepReport) -> bool {
+        true
+    }
+    /// Appelé une fois la boucle terminée.
+    fn on_stop(&mut self, _reason: StopReason, _steps: usize) {}
+}
+
+/// Observateur neutre (no-op).
+impl LoopObserver for () {}
 
 /// Résultat d'un run piloté.
 #[derive(Clone, Debug)]
@@ -75,6 +91,16 @@ impl RSIAgent {
     /// Exécute la boucle jusqu'à un critère d'arrêt (L1). Retourne la
     /// trajectoire et la **raison** motivée de l'arrêt.
     pub fn run_until(&mut self, cfg: &LoopConfig) -> LoopOutcome {
+        self.run_until_observed(cfg, &mut ())
+    }
+
+    /// Variante observée (L6) : un [`LoopObserver`] reçoit chaque pas et peut
+    /// vétoer la poursuite (human-in-the-loop).
+    pub fn run_until_observed<O: LoopObserver>(
+        &mut self,
+        cfg: &LoopConfig,
+        observer: &mut O,
+    ) -> LoopOutcome {
         let start = Instant::now();
         let mut det = ConvergenceDetector::new(cfg.plateau_window);
         let mut reports = Vec::new();
@@ -88,6 +114,12 @@ impl RSIAgent {
             let si = r.si_global;
             let max_rpn = r.max_rpn;
             reports.push(r);
+
+            // §L6 — observateur : peut vétoer la poursuite (HITL)
+            if !observer.on_step(reports.last().unwrap()) {
+                reason = StopReason::Vetoed;
+                break;
+            }
 
             // §L4 — disjoncteur de criticité
             if let Some(thr) = cfg.breaker_rpn {
@@ -131,6 +163,7 @@ impl RSIAgent {
             }
         }
 
+        observer.on_stop(reason, reports.len());
         LoopOutcome { steps: reports.len(), final_slope: det.slope(), reports, reason }
     }
 }
@@ -184,6 +217,27 @@ mod tests {
         assert_eq!(out.reason, StopReason::CircuitBreaker);
         // rollback : l'état de l'agent est revenu en deçà du dernier pas exécuté
         assert!(agent.t < out.steps, "rollback doit ramener t en arrière");
+    }
+
+    #[test]
+    fn observer_veto_stops_loop() {
+        // observateur qui coupe après 5 pas (human-in-the-loop)
+        struct Veto {
+            seen: usize,
+        }
+        impl LoopObserver for Veto {
+            fn on_step(&mut self, _r: &StepReport) -> bool {
+                self.seen += 1;
+                self.seen < 5
+            }
+        }
+        let mut agent = RSIAgent::demo(1);
+        let mut obs = Veto { seen: 0 };
+        let cfg = LoopConfig { max_steps: 1000, plateau_window: 9999, ..LoopConfig::default() };
+        let out = agent.run_until_observed(&cfg, &mut obs);
+        assert_eq!(out.reason, StopReason::Vetoed);
+        assert_eq!(out.steps, 5);
+        assert_eq!(obs.seen, 5);
     }
 
     #[test]

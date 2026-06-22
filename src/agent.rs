@@ -76,6 +76,9 @@ pub struct RSIAgent {
     pub risk_cfg: RiskConfig,
     /// (§C) la méta-révision n'est exécutée que tous les `meta_interval` pas.
     pub meta_interval: usize,
+    /// (§L3) l'améliorateur de substrat n'est invoqué qu'un pas sur
+    /// `substrate_interval` (cadence plus lente que la boucle interne).
+    pub substrate_interval: usize,
     /// (§D) seuil de routage par criticité : l'améliorateur de substrat n'est
     /// invoqué que si la fraction limitée par le substrat dépasse ce seuil.
     pub route_threshold: f64,
@@ -112,6 +115,7 @@ impl RSIAgent {
             risk_model: RiskModel::new(),
             risk_cfg: RiskConfig::default(),
             meta_interval: 1,
+            substrate_interval: 1,
             route_threshold: 0.5,
             recall_k: 4,
             audit: None,
@@ -172,6 +176,12 @@ impl RSIAgent {
     /// (§C) n'exécute la méta-révision que tous les `interval` pas. Builder.
     pub fn with_meta_interval(mut self, interval: usize) -> Self {
         self.meta_interval = interval.max(1);
+        self
+    }
+
+    /// (§L3) cadence de l'améliorateur de substrat (un pas sur `interval`). Builder.
+    pub fn with_substrate_interval(mut self, interval: usize) -> Self {
+        self.substrate_interval = interval.max(1);
         self
     }
 
@@ -345,7 +355,9 @@ impl RSIAgent {
         // (goulot substrat élevé OU mode critique = effondrement du substrat).
         let substrate_is_critical = pre_bottleneck.frac_limited_by_substrate >= self.route_threshold
             || pre_risk.most_critical == crate::criticality::modes::SUBSTRATE_COLLAPSE;
-        if substrate_is_critical {
+        // §L3 — cadence : on n'améliore le substrat qu'un pas sur substrate_interval
+        let substrate_due = self.t % self.substrate_interval == 0;
+        if substrate_is_critical && substrate_due {
             if let Some(opt) = self.substrate_opt.as_mut() {
                 let improved = opt.improve(&substrate);
                 if improved.effective_power() >= substrate.effective_power() {

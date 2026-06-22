@@ -68,6 +68,7 @@ pub mod tasks;
 pub mod octasoma_memory;
 pub mod report;
 pub mod rng;
+pub mod schedule;
 pub mod sha256;
 pub mod state;
 pub mod substrate;
@@ -82,7 +83,8 @@ pub use checkpoint::Checkpoint;
 pub use cma::SepCmaEs;
 pub use convergence::{ConvergenceDetector, Trend};
 pub use criticality::{RiskConfig, RiskModel, RiskReport, RiskSignals};
-pub use loop_ctrl::{LoopConfig, LoopOutcome, StopReason};
+pub use loop_ctrl::{LoopConfig, LoopObserver, LoopOutcome, StopReason};
+pub use schedule::{LoopSchedule, MetaMeta};
 #[cfg(feature = "forge")]
 pub use forge_meta::ForgeMetaSearch;
 #[cfg(feature = "forge")]
