@@ -150,7 +150,8 @@ Chaque [`StepReport`](src/agent.rs) expose :
 - **§7bis — Audit & déterminisme** : `audit.rs` (cœur) — journal **hash-chaîné
   SHA-256** (SHA-256 Rust pur, schéma `EventLog` de CCOS) rendant chaque pas de
   `ℳ` **traçable, vérifiable et rejouable** (`with_audit`, `audit_head/verify`),
-  avec export ingestable par CCOS.
+  avec export ingestable par CCOS. Feature `ccos` : délègue au vrai `EventLog`
+  de CCOS (`cargo build --features ccos`, sans async/TLS).
 
 ### Intégration agent IA / LLM
 

@@ -104,23 +104,23 @@ Branchement : `RSIAgent::with_audit(Box::new(HashChainLog::new()))`, puis
 > nativement le schéma hash-chaîné de CCOS (zéro dépendance) et **exporte au
 > format CCOS**.
 
-### Adaptateur CCOS prêt à activer
+### Adaptateur CCOS (feature `ccos`) — **activé**
 
 [`src/ccos_audit.rs`](../src/ccos_audit.rs) fournit `CcosAudit`, qui implémente
 `AuditLog` en déléguant à l'`EventLog` de CCOS (`EventType::AgentAction` +
-`EventPayload::Custom`, `verify_integrity`, `replay_events`). Il est écrit contre
-l'API publique vérifiée de CCOS mais **non câblé par défaut** car le dépôt CCOS
-n'est pas encore consommable par cargo :
+`EventPayload::Custom`, `verify_integrity`, `replay_events`).
 
-1. CCOS doit recevoir un `LICENSE.md` (PolyForm Noncommercial, cf. licence du
-   projet) ;
-2. CCOS a un **sous-module git mal configuré** (`no URL configured for submodule
-   'CCOS'`) qui empêche `cargo` de le fetch — même en dépendance optionnelle,
-   cela casse *tous* les builds, d'où le dé-câblage.
+```bash
+cargo build --features ccos      # tire CHECKUPAUTO/CCOS (sans async/TLS)
+```
+```rust
+let agent = RSIAgent::demo(0).with_audit(Box::new(rsi::CcosAudit::new("session")));
+```
 
-Les 3 étapes d'activation (licence + sous-module côté CCOS, puis dep/feature/
-module côté RSI) sont détaillées dans l'en-tête de `src/ccos_audit.rs`. En
-attendant, `HashChainLog` fournit l'auditabilité complète sans dépendance.
+Le dépôt CCOS a été corrigé (sous-module git nettoyé + licence PolyForm
+Noncommercial + `tokio`/`reqwest` rendus optionnels), donc la dépendance git se
+résout et compile **sans tirer l'async/TLS**. Le port natif `HashChainLog`
+reste disponible (zéro dépendance) pour qui ne veut pas la dépendance CCOS.
 
 ## Effet observé
 
