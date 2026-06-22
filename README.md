@@ -14,6 +14,11 @@ SI_global : 0.1385 → 0.6760   (+388 %)   en 120 pas
 goulot : cognitif (0 %) ──────────────► substrat (100 %)
 ```
 
+> **Feuille de route** : objectifs et chantiers à venir — dont l'**epic phare
+> « Loop Engineering »** (moteur de boucle : pilote/arrêt, convergence,
+> checkpoint/replay, disjoncteurs de sûreté, multi-échelles, pilotage MCP,
+> swarm, banc d'essai) — dans [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
 ## 🚀 Installation en une commande
 
 Connecte RSI à ton agent IA (openclaw, hermes-agent, ou tout client MCP) —
