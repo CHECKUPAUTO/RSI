@@ -36,15 +36,8 @@ use rand::Rng as _;
 use scirust_rsi::refine::{RefineTask, SelfRefiner};
 use scirust_rsi::{Fitness, Guard};
 
-/// Construit une [`Fitness`] à partir d'un score scalaire (plus grand = mieux).
-///
-/// NOTE : `scirust-rsi` expose `Fitness` ; on suppose ici `Fitness: From<f64>`
-/// (cas le plus courant). Si l'API réelle diffère (ex. `Fitness::new(f64)`),
-/// c'est la **seule** ligne à ajuster.
-#[inline]
-fn fit(score: f64) -> Fitness {
-    Fitness::from(score)
-}
+// `scirust_rsi::Fitness` est un alias `f64` (plus grand = mieux) — aucun
+// constructeur à fournir : le score scalaire EST la fitness.
 
 /// Domaine de régression symbolique adossé au moteur réel `scirust-rsi`.
 ///
@@ -203,9 +196,9 @@ impl RefineTask for SymbolicSynthesis {
         Expr::Const(0.0)
     }
 
-    /// ÉVALUATEUR → `Fitness`.
+    /// ÉVALUATEUR → `Fitness` (= f64).
     fn score(&self, a: &Expr) -> Fitness {
-        fit(self.raw_score(a))
+        self.raw_score(a)
     }
 
     /// GÉNÉRATEUR : meilleure de `lambda` mutations (révision critiquée, 1+λ),

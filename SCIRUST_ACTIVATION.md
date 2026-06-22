@@ -63,11 +63,19 @@ cargo test   --features scirust
 cargo clippy --features scirust --all-targets
 ```
 
-## Seul point à vérifier dans le pont
+## API ciblée (vérifiée sur l'en-tête réel)
 
-`scirust_bridge::fit()` suppose `Fitness: From<f64>`. Si l'API réelle expose un
-autre constructeur (p. ex. `Fitness::new(f64)`), c'est **l'unique ligne** à
-ajuster dans `src/scirust_bridge.rs`.
+- `pub type Fitness = f64;` (plus grand = mieux) → aucun constructeur, le score
+  scalaire **est** la fitness.
+- `trait RefineTask { type Solution: Clone; fn initial(&self, &mut StdRng); fn
+  score(&self, &Solution) -> Fitness; fn refine(&self, &Solution, &mut StdRng)
+  -> Solution; }`
+- `SelfRefiner::new(seed).run(&task, &guard) -> (Solution, Report)`.
+- `Report { iterations, accepted, best_fitness, history, stop_reason }`,
+  `Report::is_monotone()`, `Report::total_gain()`.
+
+> Variante umbrella : `scirust = { git = "…/scirust", branch = "master" }` puis
+> `use scirust::rsi::{…}` au lieu de `scirust_rsi::{…}`.
 
 ## Garde-fous (identiques dans les deux modes)
 

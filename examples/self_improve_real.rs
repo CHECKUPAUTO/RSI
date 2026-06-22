@@ -13,7 +13,6 @@
 #[cfg(feature = "scirust")]
 fn main() {
     use rsi::scirust_bridge::{run_self_improve, SymbolicSynthesis};
-    use scirust_rsi::refine::RefineTask;
 
     let (best, report) = run_self_improve(0);
     let task = SymbolicSynthesis::from_target(|x| x * x + 1.0, -2.0, 2.0, 21);
@@ -21,9 +20,10 @@ fn main() {
     println!("RSI — agent d'auto-amélioration (moteur réel scirust-rsi)");
     println!("meilleur candidat : {}", best.pretty());
     println!("fraction de tests réussis : {:.0}%", task.pass_fraction(&best) * 100.0);
+    println!("fitness finale  : {:.4}", report.best_fitness);
+    println!("gain total      : {:+.4}", report.total_gain());
+    println!("itérations      : {}  (révisions gardées : {})", report.iterations, report.accepted);
     println!("non-régression (is_monotone) : {}", report.is_monotone());
-    // `score` renvoie une Fitness ; on l'affiche via Debug pour rester agnostique.
-    let _ = task.score(&best);
 }
 
 #[cfg(not(feature = "scirust"))]
