@@ -181,8 +181,15 @@ Réponse aux limites identifiées au bilan produit — tout en cœur, sans dépe
 ### #5 — Composante D depuis une vraie source (`knowledge.rs`)
 - Port `KnowledgeSource` + `CorpusKnowledge` : ingère de vrais documents (en
   mémoire ou un répertoire), extrait des **concepts distincts** et fait tendre
-  `D` vers un niveau saturant. `RSIAgent::with_knowledge`. Une source lourde
-  (PAPERS) se brancherait via un adaptateur en sous-processus, même trait.
+  `D` vers un niveau saturant. `RSIAgent::with_knowledge`.
+- **`PapersKnowledge`** : adaptateur **PAPERS en sous-processus** — pour chaque
+  papier (PDF/arXiv/URL/chemin) il invoque `papers extract <source>`
+  (configurable : `with_binary`, `with_subcommand`, `with_args`, p. ex.
+  `analyze --no-llm`), capture la sortie standard et en extrait les concepts.
+  **Zéro dépendance** (PAPERS n'est pas lié comme crate — il tire
+  scirust/ORT/CUDA) ; **dégradation propre** : binaire absent ou en échec ⇒
+  repli sur le descripteur de la source (`last_degraded()`), donc compilable et
+  testable ici sans PAPERS installé. Binaire résolu via `RSI_PAPERS_BIN`.
 
 ### #3 — Backends privés, cœur autonome (`agent.rs`)
 - `RSIAgent::active_backends()` : introspection des backends réels branchés. Le

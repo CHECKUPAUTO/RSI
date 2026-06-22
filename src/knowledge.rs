@@ -63,26 +63,31 @@ impl CorpusKnowledge {
         self.concepts.len()
     }
 
-    fn extract(text: &str, into: &mut HashSet<String>) {
-        for raw in text.split(|c: char| !c.is_alphanumeric()) {
-            let tok = raw.to_lowercase();
-            // concept = jeton alphabétique de longueur significative
-            if tok.len() >= 4 && tok.chars().any(|c| c.is_alphabetic()) {
-                into.insert(tok);
-            }
+    fn compute_level(&self) -> f64 {
+        saturating_level(self.concepts.len(), self.scale)
+    }
+}
+
+/// Extrait les *concepts* (jetons alphabétiques significatifs) d'un texte.
+pub(crate) fn extract_concepts(text: &str, into: &mut HashSet<String>) {
+    for raw in text.split(|c: char| !c.is_alphanumeric()) {
+        let tok = raw.to_lowercase();
+        if tok.len() >= 4 && tok.chars().any(|c| c.is_alphabetic()) {
+            into.insert(tok);
         }
     }
+}
 
-    fn compute_level(&self) -> f64 {
-        1.0 - (-(self.concepts.len() as f64) / self.scale).exp()
-    }
+/// Niveau saturant ∈ [0,1) : `1 − exp(−n / scale)`.
+pub(crate) fn saturating_level(n: usize, scale: f64) -> f64 {
+    1.0 - (-(n as f64) / scale.max(1.0)).exp()
 }
 
 impl KnowledgeSource for CorpusKnowledge {
     fn absorb(&mut self) -> f64 {
         if self.cursor < self.documents.len() {
             let doc = self.documents[self.cursor].clone();
-            Self::extract(&doc, &mut self.concepts);
+            extract_concepts(&doc, &mut self.concepts);
             self.cursor += 1;
         }
         self.compute_level()
@@ -90,6 +95,128 @@ impl KnowledgeSource for CorpusKnowledge {
 
     fn level(&self) -> f64 {
         self.compute_level()
+    }
+}
+
+/// Source de connaissances adossée à **PAPERS** via **sous-processus**.
+///
+/// Pour chaque source (PDF / arXiv / URL / chemin), invoque le binaire `papers`
+/// (par défaut `papers extract <source>`, léger et sans LLM), capture sa sortie
+/// standard, en extrait les concepts et fait monter le niveau de `D`.
+///
+/// **Aucune dépendance** : PAPERS n'est PAS lié comme crate (il tire
+/// scirust/ORT/CUDA) — on l'appelle en processus externe. **Dégradation
+/// propre** : si le binaire est absent ou échoue, on retombe sur le texte de la
+/// source elle-même, de sorte que l'ingestion reste fonctionnelle (et testable)
+/// sans PAPERS installé.
+///
+/// Binaire résolu via `--bin`, sinon l'env `RSI_PAPERS_BIN`, sinon `papers`.
+pub struct PapersKnowledge {
+    bin: String,
+    subcommand: String,
+    extra_args: Vec<String>,
+    sources: Vec<String>,
+    cursor: usize,
+    concepts: HashSet<String>,
+    scale: f64,
+    last_degraded: bool,
+}
+
+impl PapersKnowledge {
+    /// Construit l'adaptateur pour une liste de sources (papiers).
+    pub fn new(sources: Vec<String>) -> Self {
+        let bin = std::env::var("RSI_PAPERS_BIN").unwrap_or_else(|_| "papers".to_string());
+        PapersKnowledge {
+            bin,
+            subcommand: "extract".to_string(),
+            extra_args: Vec::new(),
+            sources,
+            cursor: 0,
+            concepts: HashSet::new(),
+            scale: 96.0,
+            last_degraded: false,
+        }
+    }
+
+    /// Chemin explicite du binaire `papers`.
+    pub fn with_binary(mut self, path: impl Into<String>) -> Self {
+        self.bin = path.into();
+        self
+    }
+
+    /// Sous-commande PAPERS (défaut `extract` ; p. ex. `analyze`).
+    pub fn with_subcommand(mut self, sub: impl Into<String>) -> Self {
+        self.subcommand = sub.into();
+        self
+    }
+
+    /// Arguments supplémentaires passés à PAPERS (p. ex. `--no-llm`).
+    pub fn with_args(mut self, args: Vec<String>) -> Self {
+        self.extra_args = args;
+        self
+    }
+
+    pub fn with_scale(mut self, scale: f64) -> Self {
+        self.scale = scale.max(1.0);
+        self
+    }
+
+    /// `true` si la dernière absorption a dû dégrader (PAPERS indisponible).
+    pub fn last_degraded(&self) -> bool {
+        self.last_degraded
+    }
+
+    pub fn concept_count(&self) -> usize {
+        self.concepts.len()
+    }
+
+    /// Exécute `papers <subcommand> <source> <extra…>` ; renvoie sa sortie
+    /// standard si le processus réussit avec une sortie non triviale.
+    fn run_papers(&self, source: &str) -> Option<String> {
+        let mut cmd = std::process::Command::new(&self.bin);
+        if !self.subcommand.is_empty() {
+            cmd.arg(&self.subcommand);
+        }
+        cmd.arg(source);
+        for a in &self.extra_args {
+            cmd.arg(a);
+        }
+        match cmd.output() {
+            Ok(out) if out.status.success() => {
+                let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                if text.trim().len() >= 8 {
+                    Some(text)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
+impl KnowledgeSource for PapersKnowledge {
+    fn absorb(&mut self) -> f64 {
+        if self.cursor < self.sources.len() {
+            let source = self.sources[self.cursor].clone();
+            self.cursor += 1;
+            match self.run_papers(&source) {
+                Some(text) => {
+                    self.last_degraded = false;
+                    extract_concepts(&text, &mut self.concepts);
+                }
+                None => {
+                    // dégradation : ingère au moins le descripteur de la source
+                    self.last_degraded = true;
+                    extract_concepts(&source, &mut self.concepts);
+                }
+            }
+        }
+        saturating_level(self.concepts.len(), self.scale)
+    }
+
+    fn level(&self) -> f64 {
+        saturating_level(self.concepts.len(), self.scale)
     }
 }
 
@@ -127,5 +254,37 @@ mod tests {
         // au-delà du corpus, le niveau se stabilise
         let l4 = k.absorb();
         assert!((l4 - l3).abs() < 1e-12);
+    }
+
+    #[test]
+    fn papers_subprocess_path_via_echo() {
+        // simule PAPERS avec /bin/echo : la sortie standard contient les concepts
+        let mut p = PapersKnowledge::new(vec![
+            "alpha beta gamma delta epsilon".to_string(),
+            "substrat memoire criticite raisonnement".to_string(),
+        ])
+        .with_binary("/bin/echo")
+        .with_subcommand("paper")
+        .with_scale(8.0);
+        let l1 = p.absorb();
+        assert!(!p.last_degraded(), "echo doit réussir (pas de dégradation)");
+        assert!(l1 > 0.0);
+        let l2 = p.absorb();
+        assert!(l2 > l1);
+        assert!(p.concept_count() >= 8);
+    }
+
+    #[test]
+    fn papers_degrades_gracefully_when_absent() {
+        // binaire inexistant → dégradation : on ingère le descripteur de source
+        let mut p = PapersKnowledge::new(vec![
+            "transformer attention architecture scaling".to_string(),
+        ])
+        .with_binary("definitely_not_a_real_binary_xyz_42")
+        .with_scale(8.0);
+        let l = p.absorb();
+        assert!(p.last_degraded(), "doit dégrader si le binaire est absent");
+        assert!(l > 0.0, "le niveau monte quand même via le texte source");
+        assert!(p.concept_count() >= 3);
     }
 }

@@ -155,8 +155,10 @@ Chaque [`StepReport`](src/agent.rs) expose :
 - **Ancrage & robustesse (v0.10, cœur sans dépendance)** :
   - `tasks.rs` — **corpus de tâches réel** (Ω ancré, chargeable JSON) + compétence
     par **loi de Liebig** (`GroundedCapability`) ; `IntelligenceSurface::from_corpus`.
-  - `knowledge.rs` — port `KnowledgeSource` + `CorpusKnowledge` (lit de vrais
-    documents) qui **alimente `D`** ; `RSIAgent::with_knowledge`.
+  - `knowledge.rs` — port `KnowledgeSource` qui **alimente `D`** depuis une vraie
+    source : `CorpusKnowledge` (documents) et **`PapersKnowledge`** (ingestion de
+    papiers via **PAPERS en sous-processus**, sans dépendance, dégradation propre) ;
+    `RSIAgent::with_knowledge`.
   - `measured_substrate.rs` — `MeasuredSubstrate` : `P_eff` **mesuré nativement**
     (kernel CPU chronométré, sans Forge ni GPU).
   - **ε adaptatif** au bruit Monte-Carlo (`si_global_stats`, `adaptive_epsilon`).
