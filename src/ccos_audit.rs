@@ -1,36 +1,17 @@
-//! Adaptateur d'audit **CCOS** (feature `ccos`) — §7bis. **PRÊT À ACTIVER.**
+//! Adaptateur d'audit **CCOS** (feature `ccos`) — §7bis.
 //!
 //! Branche l'`EventLog` hash-chaîné de CCOS derrière le trait [`AuditLog`] :
 //! chaque pas de `ℳ` est enregistré comme un `TraceEvent` CCOS
 //! (`EventType::AgentAction` + `EventPayload::Custom`), avec la vérification
 //! d'intégrité et le *replay* natifs de CCOS (forensique avancée).
 //!
-//! Le port natif [`crate::audit::HashChainLog`] reproduit déjà ce schéma sans
+//! Le port natif [`crate::audit::HashChainLog`] reproduit le même schéma sans
 //! dépendance ; cet adaptateur délègue au vrai moteur CCOS quand on veut sa
-//! couche de forensique/MMU cognitive complète.
+//! couche de forensique / MMU cognitive complète.
 //!
-//! ## Activation (3 étapes)
-//!
-//! Cet adaptateur est écrit contre l'API publique vérifiée de CCOS mais n'est
-//! pas compilé par défaut, car le dépôt CCOS n'est pas (encore) consommable par
-//! cargo. Pour l'activer :
-//!
-//! 1. **Côté dépôt CCOS** : ajouter un `LICENSE.md` (PolyForm Noncommercial,
-//!    cf. licence du projet) **et** corriger le sous-module git mal configuré
-//!    (`no URL configured for submodule 'CCOS'`) qui empêche `cargo` de fetch.
-//! 2. **`Cargo.toml`** : ajouter
-//!    `ccos = { git = "https://github.com/CHECKUPAUTO/CCOS", optional = true }`
-//!    et la feature `ccos = ["dep:ccos"]`.
-//! 3. **`lib.rs`** : ajouter `#[cfg(feature = "ccos")] pub mod ccos_audit;` et
-//!    `#[cfg(feature = "ccos")] pub use ccos_audit::CcosAudit;`, puis retirer le
-//!    `#![cfg(...)]` ci-dessous.
-//!
-//! Usage une fois activé :
+//! Activé via la feature `ccos` (dépendance git sur CHECKUPAUTO/CCOS, qui
+//! n'impose pas l'async/TLS). Usage :
 //! `RSIAgent::demo(0).with_audit(Box::new(CcosAudit::new("session")))`.
-
-// Neutralise la compilation tant que la feature `ccos` n'existe pas (cf. étapes
-// ci-dessus). Le fichier reste dans le dépôt comme adaptateur prêt à l'emploi.
-#![cfg(feature = "ccos")]
 
 use ccos::event_log::{EventLog, EventPayload, EventType};
 

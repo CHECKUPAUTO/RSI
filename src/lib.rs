@@ -44,9 +44,8 @@
 pub mod agent;
 pub mod api;
 pub mod audit;
-// NOTE : `ccos_audit` (adaptateur d'audit CCOS) n'est volontairement pas
-// déclaré ici tant que le dépôt CCOS n'est pas fetchable+licencié — voir
-// l'en-tête de src/ccos_audit.rs pour les 3 étapes d'activation.
+#[cfg(feature = "ccos")]
+pub mod ccos_audit;
 pub mod cma;
 pub mod criticality;
 #[cfg(feature = "forge")]
@@ -70,6 +69,8 @@ pub mod surface;
 pub use agent::{RSIAgent, StepReport};
 pub use api::{ApiResult, RsiApi};
 pub use audit::{AuditEvent, AuditLog, HashChainLog, TraceEvent};
+#[cfg(feature = "ccos")]
+pub use ccos_audit::CcosAudit;
 pub use cma::SepCmaEs;
 pub use criticality::{RiskConfig, RiskModel, RiskReport, RiskSignals};
 #[cfg(feature = "forge")]

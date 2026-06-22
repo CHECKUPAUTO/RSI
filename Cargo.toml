@@ -17,14 +17,13 @@ default = []
 forge = ["dep:forge-core", "dep:rand", "dep:serde"]
 # Mémoire contextuelle C adossée au moteur de mémoire fractale OctaSoma.
 octasoma = ["dep:octasoma"]
-# NOTE — feature `ccos` (audit via l'EventLog de CCOS) : adaptateur prêt dans
-# src/ccos_audit.rs, mais NON câblé tant que le dépôt CCOS n'est pas fetchable
-# par cargo (sous-module git mal configuré) et licencié. Pour l'activer, voir
-# l'en-tête de src/ccos_audit.rs.
+# Audit/déterminisme adossé à l'EventLog hash-chaîné de CCOS.
+ccos = ["dep:ccos"]
 
 [dependencies]
 forge-core = { git = "https://github.com/CHECKUPAUTO/forge", optional = true }
 octasoma = { git = "https://github.com/CHECKUPAUTO/octasoma", optional = true }
+ccos = { git = "https://github.com/CHECKUPAUTO/CCOS", optional = true }
 rand = { version = "0.8", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 
