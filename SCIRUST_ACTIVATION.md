@@ -1,67 +1,40 @@
-# Activer le moteur réel `scirust-rsi`
+# Moteur `scirust-rsi` — activation
 
 RSI consomme le contrat de `scirust-rsi` (`propose → évalue → garde si meilleur →
 répète`, élitiste/borné/reproductible) de **deux** façons :
 
-| Mode | Module | Dépendance réseau | Statut |
-|------|--------|-------------------|--------|
-| **Stand-in hors-ligne** | [`src/ascent.rs`](src/ascent.rs) | aucune | ✅ actif par défaut, testé |
-| **Moteur réel** | [`src/scirust_bridge.rs`](src/scirust_bridge.rs) | `git fetch` de `CHECKUPAUTO/scirust` | 🔌 prêt, à activer |
+| Mode | Module | Dépendance | Statut |
+|------|--------|-----------|--------|
+| **Stand-in intégré** | [`src/ascent.rs`](src/ascent.rs) | aucune (std) | ✅ actif par défaut, testé |
+| **Moteur réel** | [`src/scirust_bridge.rs`](src/scirust_bridge.rs) | `scirust-rsi` (vendorisé) | ✅ `--features scirust` |
 
-Le pont (`scirust_bridge.rs`) implémente le **vrai** trait
-`scirust_rsi::refine::RefineTask` (`type Solution`, `initial`/`score → Fitness`/
-`refine(&self, _, &mut StdRng)`) et pilote la boucle avec `SelfRefiner::new(seed)
-.run(&task, &Guard)`, exactement comme `scirust-rsi/INTEGRATION.md`.
+## Activer le moteur réel
 
-## Pourquoi ce n'est pas activé par défaut
-
-Une dépendance git **non joignable casse `cargo build` pour tout le monde** (la
-résolution du lockfile échoue, même pour une dépendance `optional`). Dans
-l'environnement d'exécution actuel, `CHECKUPAUTO/scirust` n'est pas autorisé :
-
-```
-$ cargo generate-lockfile        # avec scirust-rsi = { git = ... }
-error: failed to fetch ... CHECKUPAUTO/scirust
-  failed to authenticate when downloading repository
-```
-
-On garde donc le dépôt **compilable hors-ligne** et on active le moteur réel
-quand l'accès est ouvert.
-
-## Les 3 étapes (dans un environnement où scirust est autorisé)
-
-### 1. `Cargo.toml` — pointer la feature sur la dépendance
+Le crate `scirust-rsi` est **vendorisé** dans [`vendor/scirust-rsi`](vendor/scirust-rsi)
+en dépendance `path` (aucun accès réseau requis ; ne tire que `rand`, déjà dans
+l'arbre de RSI). La feature est déjà câblée dans `Cargo.toml` :
 
 ```toml
 [features]
-# remplacer `scirust = []` par :
 scirust = ["dep:scirust-rsi", "dep:rand"]
 
 [dependencies]
-# ajouter :
-scirust-rsi = { git = "https://github.com/CHECKUPAUTO/scirust", branch = "master", optional = true }
+scirust-rsi = { path = "vendor/scirust-rsi", optional = true }
 ```
 
-> `rand` est déjà une dépendance optionnelle du projet ; `scirust-rsi` réutilise
-> son `StdRng`. (Variante : `scirust = { git = ... }` puis `scirust::rsi`.)
-
-### 2. `src/lib.rs` — aucune action
-
-Le module est déjà déclaré sous la feature :
-
-```rust
-#[cfg(feature = "scirust")]
-pub mod scirust_bridge;
-```
-
-### 3. Compiler / exécuter / tester
+Il suffit donc de :
 
 ```bash
-cargo build  --features scirust
-cargo run    --features scirust --release --example self_improve_real
+cargo run    --release --features scirust --example self_improve_real
 cargo test   --features scirust
 cargo clippy --features scirust --all-targets
 ```
+
+> ⚠️ **`vendor/scirust-rsi` est une reconstruction API-compatible** de l'API
+> publiée (cf. en-tête + `INTEGRATION.md`), faite pour débloquer le build
+> hors-ligne. Elle respecte exactement le contrat public mais n'est **pas** les
+> octets amont. Pour passer au crate amont (recevoir les mises à jour), voir
+> ci-dessous.
 
 ## API ciblée (vérifiée sur l'en-tête réel)
 
@@ -73,9 +46,21 @@ cargo clippy --features scirust --all-targets
 - `SelfRefiner::new(seed).run(&task, &guard) -> (Solution, Report)`.
 - `Report { iterations, accepted, best_fitness, history, stop_reason }`,
   `Report::is_monotone()`, `Report::total_gain()`.
+- Aussi exposés : `ascend(...)` (fonction libre), `bench::{sphere, rastrigin,
+  rosenbrock}`, et les pilotes `star::Star`, `expert_iteration::ExpertIteration`,
+  `pbt::Pbt`, `evo::OnePlusLambda`.
 
-> Variante umbrella : `scirust = { git = "…/scirust", branch = "master" }` puis
-> `use scirust::rsi::{…}` au lieu de `scirust_rsi::{…}`.
+## Passer au crate amont (`CHECKUPAUTO/scirust`)
+
+Quand le dépôt + le réseau sont ouverts dans l'environnement web, remplacer la
+dépendance `path` par l'amont — l'API est identique, aucun changement de code :
+
+```toml
+# git-dependency
+scirust-rsi = { git = "https://github.com/CHECKUPAUTO/scirust", branch = "master", optional = true }
+# ou installeur vendorisé amont : bash vendor_scirust_rsi.sh   (recrée vendor/scirust-rsi)
+# variante umbrella : scirust = { git = … } puis `use scirust::rsi::{…}`
+```
 
 ## Garde-fous (identiques dans les deux modes)
 

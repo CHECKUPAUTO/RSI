@@ -251,13 +251,14 @@ stabilise (patience), 100 % des cas de test réussis, `is_monotone() == true`.
 >   et pilote la boucle avec `SelfRefiner::new(seed).run(&task, &Guard)`,
 >   conformément à `scirust-rsi/INTEGRATION.md`.
 >
-> La dépendance `scirust-rsi = { git = … }` **casse `cargo build` tant que
-> `CHECKUPAUTO/scirust` n'est pas joignable** (échec de résolution du lockfile,
-> même en `optional`) — non autorisé dans l'environnement d'exécution actuel. Le
-> pont est donc livré derrière la feature `scirust` (déclarée vide pour rester
-> compilable hors-ligne). Activation en 3 étapes :
-> [`SCIRUST_ACTIVATION.md`](SCIRUST_ACTIVATION.md), puis
-> `cargo run --features scirust --release --example self_improve_real`.
+> Le moteur réel est **vendorisé** dans [`vendor/scirust-rsi`](vendor/scirust-rsi)
+> (dépendance `path`, hors-ligne, ne tire que `rand`) — c'est une reconstruction
+> API-compatible de l'API publiée, le dépôt `CHECKUPAUTO/scirust` n'étant pas
+> joignable depuis cet environnement (une git-dependency injoignable casse la
+> résolution du lockfile, même en `optional`). Il s'active directement :
+> `cargo run --features scirust --release --example self_improve_real`. Pour
+> repasser à l'amont (git-dependency / installeur vendorisé), voir
+> [`SCIRUST_ACTIVATION.md`](SCIRUST_ACTIVATION.md).
 
 ## Architecture
 
