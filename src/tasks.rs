@@ -73,6 +73,29 @@ impl TaskCorpus {
         TaskCorpus::new(tasks)
     }
 
+    /// Corpus **élargi** (~36 tâches) : chaque archétype intégré est décliné en
+    /// plusieurs niveaux de difficulté, donnant un Ω plus grand et moins bruité
+    /// (utile pour l'évaluation / les ablations). Pour un vrai benchmark public,
+    /// charger les métadonnées via [`TaskCorpus::from_json`].
+    pub fn extended() -> Self {
+        let base = TaskCorpus::builtin();
+        let factors = [0.6_f64, 0.85, 1.0, 1.15];
+        let mut tasks = Vec::new();
+        for t in &base.tasks {
+            for (k, f) in factors.iter().enumerate() {
+                let difficulty = (t.difficulty * f).clamp(0.05, 0.98);
+                tasks.push(Task {
+                    name: format!("{}_d{k}", t.name),
+                    requirements: t.requirements,
+                    difficulty,
+                    // les variantes difficiles pèsent un peu moins
+                    weight: t.weight * (1.0 - 0.1 * k as f64),
+                });
+            }
+        }
+        TaskCorpus::new(tasks)
+    }
+
     /// Charge un corpus depuis du JSON :
     /// `{"tasks":[{"name":..,"requirements":[6],"difficulty":..,"weight":..}, …]}`.
     pub fn from_json(src: &str) -> Result<Self, String> {

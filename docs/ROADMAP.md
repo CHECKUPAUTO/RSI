@@ -89,13 +89,17 @@ transition de boucle.
 
 ## Autres objectifs
 
-- **Validation empirique** : étude d'ablation chiffrée des garde-fous de sûreté
-  (avec/sans réponses actives, ε adaptatif, mémoire) + corpus issu d'un
-  benchmark public plus large.
+- **Validation empirique** : ✅ banc d'ablation `rsi-ablate` (cœur pur) +
+  corpus élargi (Ω=40) — voir [`docs/VALIDATION.md`](VALIDATION.md). Constats :
+  non-régression préservée partout, connaissances ↑ SI, substrat ↑ vitesse,
+  ε adaptatif ↓ risque. À étendre : corpus issu d'un **benchmark public** réel
+  (chargeable via `TaskCorpus::from_json`).
 - **Connaissances `D`** : ✅ port + `CorpusKnowledge` + `PapersKnowledge`
   (sous-processus). Étendre : ingestion incrémentale, dédup sémantique.
 - **Substrat** : ✅ `MeasuredSubstrate` natif + Forge. Étendre : domaines réels
   (GPU/SIMD via Forge côté toolchain), efficacité matérielle `H` mesurée.
 - **Surface** : ✅ corpus ancré. Étendre : tâches *exécutées* (compétence =
   succès réel d'un solveur), import de jeux de tâches publics.
-- **Hors périmètre immédiat** : GPU/temps réel (dépend de la toolchain).
+- **GPU / temps réel** : documenté ([`docs/VALIDATION.md`](VALIDATION.md)) — non
+  bloquant par conception (seam `SubstrateImprover` + Forge SIMD/CUDA côté
+  toolchain) ; `MeasuredSubstrate` (CPU) couvre l'environnement sans GPU.

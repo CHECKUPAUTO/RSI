@@ -168,6 +168,8 @@ Chaque [`StepReport`](src/agent.rs) expose :
     (kernel CPU chronométré, sans Forge ni GPU).
   - **ε adaptatif** au bruit Monte-Carlo (`si_global_stats`, `adaptive_epsilon`).
   - introspection : `RSIAgent::active_backends()`.
+- **Validation empirique** : banc d'ablation `cargo run --release --bin rsi-ablate`
+  (cœur pur) + corpus élargi — voir [`docs/VALIDATION.md`](docs/VALIDATION.md).
 
 ### Démo « tout intégré »
 

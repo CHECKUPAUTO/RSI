@@ -44,6 +44,10 @@ path = "src/bin/rsi_mcp.rs"
 name = "rsi-connect"
 path = "src/bin/rsi_connect.rs"
 
+[[bin]]
+name = "rsi-ablate"
+path = "src/bin/rsi_ablate.rs"
+
 [profile.release]
 opt-level = 3
 lto = true
