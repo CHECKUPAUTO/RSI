@@ -46,6 +46,9 @@ pub struct StepReport {
     pub most_critical: &'static str,
     /// SI_safe = SI_global − κ · Risk_global.
     pub si_safe: f64,
+    /// réponse de sûreté appliquée à ce pas (§7 garde-fou actif) :
+    /// "none" | "damp_gain" | "realign_V" | "trust_floor".
+    pub mitigation: &'static str,
 }
 
 /// Agent cognitif auto-améliorant.
@@ -260,16 +263,30 @@ impl RSIAgent {
         };
         let pre_risk = self.risk_model.assess(&pre_signals);
 
-        // Garde-fou de criticité : si le RPN max dépasse le seuil, adopter un pas
-        // conservateur en atténuant le gain de la proposition ℳ.
+        // §7 — GARDE-FOU ACTIF : au-delà de l'atténuation du gain, on applique
+        // une réponse *ciblée* selon le mode le plus critique.
         let mut active = self.strategy.clone();
-        if pre_risk.max_rpn > self.risk_cfg.rpn_max {
-            active.gain *= 0.5;
+        let mut mitigation = "none";
+        let over_threshold = self.risk_cfg.active_response && pre_risk.max_rpn > self.risk_cfg.rpn_max;
+        if over_threshold {
+            active.gain *= 0.5; // réponse de base : pas conservateur
+            mitigation = "damp_gain";
         }
 
         // 2) ℳ(S_t, V_t, H, O) : proposition d'auto-modification (état + logiciel)
         let (meta_delta, new_substrate) = active.apply(&self.state, &self.substrate);
-        let state_after_meta = self.state.add(&meta_delta).clipped(0.0, 1.0);
+        let mut state_after_meta = self.state.add(&meta_delta).clipped(0.0, 1.0);
+
+        // Réponse ciblée — dérive des valeurs : réaligner V vers le niveau
+        // d'autonomie (corrige l'écart A − V qui alimente le mode f3).
+        if over_threshold && pre_risk.most_critical == crate::criticality::modes::VALUE_DRIFT {
+            let a = mean(&self.state.a);
+            for v in state_after_meta.v.iter_mut() {
+                *v = (*v + 0.5 * (a - *v).max(0.0)).clamp(0.0, 1.0);
+            }
+            mitigation = "realign_V";
+        }
+
         let meta_delta_norm = delta_norm(&self.state, &state_after_meta);
 
         // La réécriture logicielle n'est acceptée que si elle n'abaisse pas P_eff.
@@ -290,6 +307,18 @@ impl RSIAgent {
                 if improved.effective_power() >= substrate.effective_power() {
                     substrate = improved;
                 }
+            }
+        }
+
+        // Réponse ciblée — wireheading : si l'efficience *mesurée* s'écarte trop
+        // de l'analytique, la safety RABAISSE la mesure vers l'analytique (on
+        // refuse de « croire » une mesure non vérifiée — anti-wireheading f7).
+        // Cela peut baisser P_eff : c'est un override de sûreté assumé.
+        if over_threshold && pre_risk.most_critical == crate::criticality::modes::WIREHEADING {
+            if let Some(m) = substrate.measured_software_eff {
+                let analytic = substrate.analytic_software_efficiency();
+                substrate.set_measured_software_eff(Some(analytic + (m - analytic) * 0.5));
+                mitigation = "trust_floor";
             }
         }
 
@@ -363,6 +392,7 @@ impl RSIAgent {
             max_rpn: risk.max_rpn,
             most_critical: risk.most_critical,
             si_safe,
+            mitigation,
         }
     }
 
@@ -472,6 +502,28 @@ mod tests {
         assert_eq!(agent.audit_len(), 20);
         assert!(agent.audit_verify()); // chaîne intègre
         assert!(agent.audit_head().is_some());
+    }
+
+    #[test]
+    fn active_response_realigns_on_value_drift() {
+        use crate::rng::Rng;
+        // état à forte autonomie / faible alignement → dérive des valeurs critique
+        let dims = Dims::uniform(4);
+        let mut state = CognitiveState::zeros(dims);
+        state.a.iter_mut().for_each(|x| *x = 0.9);
+        state.v.iter_mut().for_each(|x| *x = 0.05);
+        let mut rng = Rng::new(1);
+        let substrate = Substrate::default_with(4, 4, &mut rng);
+        let surface = IntelligenceSurface::sample(128, &mut rng);
+        let meta = Box::new(MetaOptimizer::new(8, 0.1, 1));
+        let mut agent = RSIAgent::new(state, substrate, surface, StabilityConfig::default(), meta);
+
+        let v_before: f64 = agent.state.v.iter().sum::<f64>() / agent.state.v.len() as f64;
+        let r = agent.step();
+        assert_eq!(r.most_critical, crate::criticality::modes::VALUE_DRIFT);
+        assert_eq!(r.mitigation, "realign_V");
+        let v_after: f64 = agent.state.v.iter().sum::<f64>() / agent.state.v.len() as f64;
+        assert!(v_after > v_before, "V réaligné vers le haut : {v_before} → {v_after}");
     }
 
     #[test]

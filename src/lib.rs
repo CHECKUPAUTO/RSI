@@ -57,6 +57,7 @@ pub mod json;
 pub mod linalg;
 pub mod memory;
 pub mod meta;
+pub mod plot;
 #[cfg(feature = "octasoma")]
 pub mod octasoma_memory;
 pub mod report;

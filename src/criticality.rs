@@ -207,11 +207,14 @@ pub struct RiskConfig {
     pub rpn_max: f64,
     /// hausse de Risk_global tolérée par pas (δ).
     pub risk_delta: f64,
+    /// active les réponses ciblées par mode (réalignement V, plancher
+    /// anti-wireheading, atténuation du gain). `false` = simple mesure du risque.
+    pub active_response: bool,
 }
 
 impl Default for RiskConfig {
     fn default() -> Self {
-        RiskConfig { kappa: 0.5, rpn_max: 0.4, risk_delta: 0.1 }
+        RiskConfig { kappa: 0.5, rpn_max: 0.4, risk_delta: 0.1, active_response: true }
     }
 }
 

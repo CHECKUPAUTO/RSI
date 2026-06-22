@@ -1,20 +1,18 @@
-//! Démo **complète** : un agent RSI « tout intégré » réunissant les quatre
-//! backends réels et la criticité §7 :
+//! Démo **complète** : agent RSI « tout intégré » (Forge ℳ + Forge P_eff +
+//! OctaSoma C + CCOS audit + criticité §7), avec deux modes :
 //!
-//! - **ℳ** méta-optimiseur exécuté par **Forge** ;
-//! - **P_eff** substrat mesuré par **Forge** (kernel réel) ;
-//! - **C** mémoire contextuelle par **OctaSoma** (k-NN fractal) ;
-//! - **audit** hash-chaîné délégué à **CCOS** (`EventLog`) ;
-//! - **criticité** AMDEC (risk_global, SI_safe, routage par criticité).
+//! - run simple : trajectoire, audit, rappel mémoire, export CSV/JSON + SVG ;
+//! - `compare`  : agent « nu » (cœur, méta aléatoire) vs « tout intégré »,
+//!   côte à côte, pour visualiser l'apport des intégrations.
 //!
-//! Lancement :
 //! ```text
 //! cargo run --release --bin rsi-full --features "forge octasoma ccos" -- [pas] [graine]
+//! cargo run --release --bin rsi-full --features "forge octasoma ccos" -- compare [pas] [graine]
 //! ```
 
 use rsi::{
-    CcosAudit, CognitiveState, Dims, ForgeMetaSearch, ForgeSubstrate, IntelligenceSurface,
-    OctaSomaMemory, RSIAgent, Rng, StabilityConfig, Substrate,
+    report, CcosAudit, CognitiveState, Dims, ForgeMetaSearch, ForgeSubstrate, IntelligenceSurface,
+    MetaOptimizer, RSIAgent, RiskConfig, Rng, StabilityConfig, StepReport, Substrate,
 };
 
 fn short(mode: &str) -> &str {
@@ -30,104 +28,164 @@ fn short(mode: &str) -> &str {
     }
 }
 
-fn main() {
-    let mut args = std::env::args().skip(1);
-    let steps: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(30);
-    let seed: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(2026);
-
-    // --- assemblage de l'agent « tout intégré » ---------------------------- //
+/// Sous-systèmes partagés (mêmes état/substrat/surface pour une comparaison équitable).
+fn build(seed: u64) -> (CognitiveState, Substrate, IntelligenceSurface) {
     let mut rng = Rng::new(seed);
-    let dims = Dims::uniform(6);
-    let state = CognitiveState::random(dims, &mut rng, 0.08);
+    let state = CognitiveState::random(Dims::uniform(6), &mut rng, 0.08);
     let substrate = Substrate::default_with(4, 4, &mut rng);
     let surface = IntelligenceSurface::sample(512, &mut rng);
-    let state_dim = state.size();
+    (state, substrate, surface)
+}
 
-    let mut agent = RSIAgent::new(
-        state,
-        substrate,
-        surface,
+fn integrated(seed: u64, s: &CognitiveState, sub: &Substrate, surf: &IntelligenceSurface) -> RSIAgent {
+    let dim = s.size();
+    RSIAgent::new(
+        s.clone(),
+        sub.clone(),
+        surf.clone(),
         StabilityConfig::default(),
-        Box::new(ForgeMetaSearch::new(4, 12, 0.15, seed ^ 0xF0)), // ℳ via Forge
+        Box::new(ForgeMetaSearch::new(4, 12, 0.15, seed ^ 0xF0)),
     )
-    .with_substrate_improver(Box::new(ForgeSubstrate::new(96, 2, 6, seed ^ 0x5B))) // P_eff réel
-    .with_memory(Box::new(OctaSomaMemory::new(state_dim, seed))) // C via OctaSoma
-    .with_audit(Box::new(CcosAudit::new(format!("rsi-{seed}")))) // audit via CCOS
-    .with_meta_interval(1)
-    .with_route_threshold(0.5);
+    .with_substrate_improver(Box::new(ForgeSubstrate::new(96, 2, 6, seed ^ 0x5B)))
+    .with_memory(Box::new(rsi::OctaSomaMemory::new(dim, seed)))
+    .with_audit(Box::new(CcosAudit::new(format!("rsi-{seed}"))))
+    // seuil de criticité plus strict pour que les réponses actives s'engagent
+    .with_risk_config(RiskConfig { rpn_max: 0.3, ..RiskConfig::default() })
+}
+
+fn main() {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let compare = argv.iter().any(|a| a == "compare");
+    let nums: Vec<usize> = argv.iter().filter_map(|a| a.parse().ok()).collect();
+    let steps = nums.first().copied().unwrap_or(45);
+    let seed = nums.get(1).copied().unwrap_or(2026) as u64;
+
+    let (state, substrate, surface) = build(seed);
+
+    if compare {
+        run_compare(steps, seed, &state, &substrate, &surface);
+    } else {
+        run_single(steps, seed, &state, &substrate, &surface);
+    }
+}
+
+fn run_single(steps: usize, seed: u64, s: &CognitiveState, sub: &Substrate, surf: &IntelligenceSurface) {
+    let mut agent = integrated(seed, s, sub, surf);
 
     println!("╔════════════════════════════════════════════════════════════════════════════╗");
     println!("║   RSI — AGENT TOUT INTÉGRÉ   (Forge ℳ + Forge P_eff + OctaSoma C + CCOS audit)║");
     println!("╚════════════════════════════════════════════════════════════════════════════╝");
-    println!("seed={seed}  pas={steps}  |Ω|={}  dim(S)={state_dim}", agent.surface.tasks.len());
+    println!("seed={seed}  pas={steps}  |Ω|={}  dim(S)={}", agent.surface.tasks.len(), s.size());
     println!();
     println!(
-        "{:>3} │ {:>7} │ {:>7} │ {:>6} │ {:>6} │ {:>6} │ {:>10} │ {:>5} │ {:>4}",
-        "t", "SI", "SI_safe", "P_eff", "risk", "maxRPN", "critique", "%sub", "mém"
+        "{:>3} │ {:>7} │ {:>7} │ {:>6} │ {:>6} │ {:>6} │ {:>10} │ {:>9} │ {:>4}",
+        "t", "SI", "SI_safe", "P_eff", "risk", "maxRPN", "critique", "réponse", "%sub"
     );
-    println!("{}", "─".repeat(78));
+    println!("{}", "─".repeat(82));
 
     let start_si = agent.si_global();
     let reports = agent.run(steps);
-
     let stride = (steps / 18).max(1);
     for (i, r) in reports.iter().enumerate() {
-        if i % stride != 0 && i + 1 != reports.len() {
+        // affiche : pas échantillonnés + dernier + TOUT pas où une réponse de
+        // sûreté s'active (pour rendre le garde-fou actif visible)
+        if i % stride != 0 && i + 1 != reports.len() && r.mitigation == "none" {
             continue;
         }
         println!(
-            "{:>3} │ {:>7.4} │ {:>7.4} │ {:>6.4} │ {:>6.4} │ {:>6.4} │ {:>10} │ {:>4.0}% │ {:>4}",
-            r.t,
-            r.si_global,
-            r.si_safe,
-            r.p_eff,
-            r.risk_global,
-            r.max_rpn,
-            short(r.most_critical),
-            r.frac_limited_by_substrate * 100.0,
-            agent.memory_len(),
+            "{:>3} │ {:>7.4} │ {:>7.4} │ {:>6.4} │ {:>6.4} │ {:>6.4} │ {:>10} │ {:>9} │ {:>3.0}%",
+            r.t, r.si_global, r.si_safe, r.p_eff, r.risk_global, r.max_rpn,
+            short(r.most_critical), r.mitigation, r.frac_limited_by_substrate * 100.0,
         );
     }
     let end = reports.last().unwrap();
-    println!("{}", "─".repeat(78));
+    println!("{}", "─".repeat(82));
     println!(
         "SI_global : {start_si:.4} → {:.4}  ({:+.1} %)   |   SI_safe final : {:.4}   |   P_eff : {:.4}",
-        end.si_global,
-        (end.si_global - start_si) / start_si * 100.0,
-        end.si_safe,
-        end.p_eff,
+        end.si_global, (end.si_global - start_si) / start_si * 100.0, end.si_safe, end.p_eff,
     );
 
-    // --- 1) audit CCOS : intégrité + déterminisme -------------------------- //
-    println!("\n▸ Audit CCOS (journal hash-chaîné)");
-    println!("   événements enregistrés : {}", agent.audit_len());
-    println!("   intégrité de la chaîne : {}", if agent.audit_verify() { "✓ valide" } else { "✗ ALTÉRÉE" });
-    if let Some(head) = agent.audit_head() {
-        println!("   hash de tête : {}…", &head[..head.len().min(32)]);
+    println!("\n▸ Audit CCOS : {} événements — intégrité {}",
+        agent.audit_len(), if agent.audit_verify() { "✓ valide" } else { "✗ ALTÉRÉE" });
+    if let Some(h) = agent.audit_head() {
+        println!("  hash de tête : {}…", &h[..h.len().min(32)]);
     }
 
-    // --- 2) mémoire OctaSoma : rappel d'un contexte proche ----------------- //
-    println!("\n▸ Mémoire OctaSoma (rappel du contexte le plus proche de l'état final)");
-    let recalled = agent.recall_similar(1);
-    if let Some(payload) = recalled.first() {
-        if let Some((si, strat)) = rsi::meta::decode_strategy_payload(payload) {
-            println!("   contexte rappelé : SI={si:.4}, gain ℳ={:.3}", strat.gain);
-            println!("   focus (D,M,R,A,C,V) = {:?}", strat.focus.map(|x| (x * 100.0).round() / 100.0));
+    println!("\n▸ Mémoire OctaSoma : rappel du contexte le plus proche de l'état final");
+    if let Some(p) = agent.recall_similar(1).first() {
+        if let Some((si, strat)) = rsi::meta::decode_strategy_payload(p) {
+            println!("  SI={si:.4}, gain ℳ={:.3}, focus={:?}", strat.gain,
+                strat.focus.map(|x| (x * 100.0).round() / 100.0));
         }
     }
 
-    // --- 3) export de la trajectoire --------------------------------------- //
-    println!("\n▸ Export de la trajectoire");
-    match rsi::report::write_csv(&reports, "rsi_full_trajectory.csv") {
-        Ok(()) => println!("   ✓ CSV  : rsi_full_trajectory.csv ({} lignes)", reports.len()),
-        Err(e) => println!("   ✗ CSV  : {e}"),
-    }
-    match rsi::report::write_json(&reports, "rsi_full_trajectory.json") {
-        Ok(()) => println!("   ✓ JSON : rsi_full_trajectory.json"),
-        Err(e) => println!("   ✗ JSON : {e}"),
-    }
+    export(&reports);
+}
 
-    println!("\nLecture : la criticité (risk/maxRPN) et le mode 'critique' montrent où le");
-    println!("risque se concentre ; le goulot %sub bascule vers le substrat ; SI_safe ≤ SI ;");
-    println!("le journal CCOS rend toute la trajectoire vérifiable et rejouable.");
+fn run_compare(steps: usize, seed: u64, s: &CognitiveState, sub: &Substrate, surf: &IntelligenceSurface) {
+    // agent « nu » : cœur seul, méta aléatoire, aucune intégration
+    let mut naked = RSIAgent::new(
+        s.clone(), sub.clone(), surf.clone(), StabilityConfig::default(),
+        Box::new(MetaOptimizer::new(48, 0.12, seed ^ 1)),
+    );
+    let mut full = integrated(seed, s, sub, surf);
+
+    println!("╔════════════════════════════════════════════════════════════════════════════╗");
+    println!("║   RSI — COMPARATIF   « nu » (cœur)   vs   « tout intégré »                    ║");
+    println!("╚════════════════════════════════════════════════════════════════════════════╝");
+    println!("seed={seed}  pas={steps}  (mêmes état/substrat/surface au départ)\n");
+
+    let n0 = naked.si_global();
+    let f0 = full.si_global();
+    let rn = naked.run(steps);
+    let rf = full.run(steps);
+
+    println!(
+        "{:>3} │ {:^21} │ {:^29}",
+        "", "NU (cœur)", "TOUT INTÉGRÉ"
+    );
+    println!(
+        "{:>3} │ {:>6} {:>6} {:>6} │ {:>6} {:>6} {:>6} {:>9}",
+        "t", "SI", "P_eff", "risk", "SI", "P_eff", "risk", "réponse"
+    );
+    println!("{}", "─".repeat(78));
+    let stride = (steps / 15).max(1);
+    for i in (0..steps).step_by(stride) {
+        let a = &rn[i];
+        let b = &rf[i];
+        println!(
+            "{:>3} │ {:>6.4} {:>6.4} {:>6.4} │ {:>6.4} {:>6.4} {:>6.4} {:>9}",
+            i + 1, a.si_global, a.p_eff, a.risk_global,
+            b.si_global, b.p_eff, b.risk_global, b.mitigation,
+        );
+    }
+    println!("{}", "─".repeat(78));
+    let en = rn.last().unwrap();
+    let ef = rf.last().unwrap();
+    println!("Final NU         : SI {:.4} (+{:.0}%)  P_eff {:.4}  risk {:.4}  SI_safe {:.4}",
+        en.si_global, (en.si_global - n0) / n0 * 100.0, en.p_eff, en.risk_global, en.si_safe);
+    println!("Final INTÉGRÉ     : SI {:.4} (+{:.0}%)  P_eff {:.4}  risk {:.4}  SI_safe {:.4}",
+        ef.si_global, (ef.si_global - f0) / f0 * 100.0, ef.p_eff, ef.risk_global, ef.si_safe);
+    println!("\nApport des intégrations : P_eff {:.4} → {:.4} (substrat réel mesuré), audit CCOS {} événements,",
+        en.p_eff, ef.p_eff, full.audit_len());
+    println!("réponses de sûreté actives (réalignement V / plancher anti-wireheading) absentes du run nu.");
+
+    export(&rf);
+}
+
+fn export(reports: &[StepReport]) {
+    println!("\n▸ Export de la trajectoire");
+    for (label, res) in [
+        ("CSV ", report::write_csv(reports, "rsi_full_trajectory.csv")),
+        ("JSON", report::write_json(reports, "rsi_full_trajectory.json")),
+    ] {
+        match res {
+            Ok(()) => println!("  ✓ {label} : rsi_full_trajectory.{}", label.trim().to_lowercase()),
+            Err(e) => println!("  ✗ {label} : {e}"),
+        }
+    }
+    match rsi::plot::write_svg(reports, "rsi_full_trajectory.svg") {
+        Ok(()) => println!("  ✓ SVG  : rsi_full_trajectory.svg (ouvrable dans un navigateur)"),
+        Err(e) => println!("  ✗ SVG  : {e}"),
+    }
 }

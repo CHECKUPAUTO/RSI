@@ -158,12 +158,15 @@ Chaque [`StepReport`](src/agent.rs) expose :
 Un agent réunissant les quatre backends + la criticité §7 :
 
 ```bash
-cargo run --release --bin rsi-full --features "forge octasoma ccos" -- 30 2026
+cargo run --release --bin rsi-full --features "forge octasoma ccos" -- 45 2026
+cargo run --release --bin rsi-full --features "forge octasoma ccos" -- compare 30 2026
 ```
 
-Affiche la trajectoire (SI, SI_safe, P_eff, risque, mode critique, goulot),
-vérifie l'intégrité du journal d'audit CCOS, rappelle un contexte via OctaSoma
-et exporte la trajectoire (CSV/JSON). Source : [`src/bin/rsi_full.rs`](src/bin/rsi_full.rs).
+Affiche la trajectoire (SI, SI_safe, P_eff, risque, mode critique, **réponse de
+sûreté active**, goulot), vérifie l'intégrité du journal d'audit CCOS, rappelle
+un contexte via OctaSoma et exporte la trajectoire (CSV/JSON + **graphe SVG**).
+Le mode `compare` oppose un agent « nu » (cœur) à l'agent « tout intégré ».
+Source : [`src/bin/rsi_full.rs`](src/bin/rsi_full.rs).
 
 ### Intégration agent IA / LLM
 

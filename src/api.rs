@@ -300,6 +300,7 @@ fn step_report_json(r: &StepReport) -> Json {
         .set("max_rpn", Json::Num(r.max_rpn))
         .set("most_critical", Json::Str(r.most_critical.to_string()))
         .set("si_safe", Json::Num(r.si_safe))
+        .set("mitigation", Json::Str(r.mitigation.to_string()))
         .set("appr", appr)
         .set("capabilities", capabilities_json(&r.capabilities));
     out

@@ -71,12 +71,23 @@ Pour chaque mode `f` : `RPN_f = Sévérité_f · Occurrence_f · Détection_f`
 | wireheading | `max(0, mesuré − analytique)` | Forge `verify` |
 
 Agrégats : `Risk_global = moyenne_f RPN_f` et **intelligence ajustée au
-risque** `SI_safe = SI_global − κ · Risk_global`. Un **garde-fou de criticité**
-(`RiskConfig { kappa, rpn_max, risk_delta }`) déclenche un **pas conservateur**
-(atténuation du gain de `ℳ`) quand `max RPN > rpn_max`.
+risque** `SI_safe = SI_global − κ · Risk_global`.
 
-Chaque `StepReport` expose désormais `risk_global`, `max_rpn`, `most_critical`,
-`si_safe` (présents aussi dans l'export CSV/JSON et l'API/MCP). Les garde-fous
+**Garde-fou actif** (`RiskConfig { kappa, rpn_max, risk_delta, active_response }`)
+— quand `max RPN > rpn_max`, l'agent applique une **réponse ciblée** selon le
+mode le plus critique (champ `StepReport.mitigation`) :
+
+| Mode critique | Réponse | Effet |
+|---------------|---------|-------|
+| (tous) | `damp_gain` | atténue le gain de `ℳ` (pas conservateur) |
+| dérive des valeurs | `realign_V` | pousse `V` vers le niveau d'autonomie (corrige `A−V`) |
+| wireheading | `trust_floor` | rabaisse l'efficience *mesurée* vers l'analytique |
+
+Vraie boucle de contrôle : la réponse fait retomber le RPN, qui remonte, qui
+redéclenche la réponse (dents de scie visibles dans la démo `rsi-full`).
+
+Chaque `StepReport` expose `risk_global`, `max_rpn`, `most_critical`, `si_safe`
+et `mitigation` (présents aussi dans l'export CSV/JSON et l'API/MCP). Les garde-fous
 λ/ε de §4 deviennent des cas particuliers de la maîtrise du risque (modes
 régression/instabilité).
 
