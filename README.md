@@ -170,6 +170,9 @@ Chaque [`StepReport`](src/agent.rs) expose :
   - introspection : `RSIAgent::active_backends()`.
 - **Validation empirique** : banc d'ablation `cargo run --release --bin rsi-ablate`
   (cœur pur) + corpus élargi — voir [`docs/VALIDATION.md`](docs/VALIDATION.md).
+- **Loop engineering (socle L1–L2)** : `RSIAgent::run_until(LoopConfig)` —
+  pilote de boucle avec arrêt motivé (budget, cible, **plateau**, divergence) +
+  `ConvergenceDetector`. Suite du chantier dans [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ### Démo « tout intégré »
 

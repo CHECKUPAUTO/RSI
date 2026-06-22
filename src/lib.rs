@@ -47,7 +47,9 @@ pub mod audit;
 #[cfg(feature = "ccos")]
 pub mod ccos_audit;
 pub mod cma;
+pub mod convergence;
 pub mod criticality;
+pub mod loop_ctrl;
 #[cfg(feature = "forge")]
 pub mod forge_meta;
 #[cfg(feature = "forge")]
@@ -76,7 +78,9 @@ pub use audit::{AuditEvent, AuditLog, HashChainLog, TraceEvent};
 #[cfg(feature = "ccos")]
 pub use ccos_audit::CcosAudit;
 pub use cma::SepCmaEs;
+pub use convergence::{ConvergenceDetector, Trend};
 pub use criticality::{RiskConfig, RiskModel, RiskReport, RiskSignals};
+pub use loop_ctrl::{LoopConfig, LoopOutcome, StopReason};
 #[cfg(feature = "forge")]
 pub use forge_meta::ForgeMetaSearch;
 #[cfg(feature = "forge")]

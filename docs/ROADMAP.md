@@ -22,17 +22,16 @@ peut piloter, mettre en pause, rejouer et reconfigurer la boucle en sûreté.
 
 ### Chantiers (L1–L9)
 
-**L1 — Pilote de boucle & critères d'arrêt.** `LoopController` configurable
-au-dessus de `step()` : budgets (pas / temps / évaluations), arrêt sur
-**convergence** (pente de SI ≈ 0), plateau, ou cible atteinte ; `LoopConfig`,
-`StopReason`. *Livrable* : `loop_ctrl.rs` + `RSIAgent::run_until(cfg)`.
-*Acceptation* : arrêt déterministe et motivé sur 3 critères, testé.
+**L1 — Pilote de boucle & critères d'arrêt.** ✅ `LoopConfig`/`StopReason`/
+`LoopOutcome` + `RSIAgent::run_until(cfg)` (`loop_ctrl.rs`) : arrêt motivé sur
+budget pas/temps, cible `SI`, plateau ou divergence. *Testé* (cible, plateau
+avant budget, max_steps).
 
-**L2 — Détection de convergence / divergence / attracteur.** Estimateurs en
-ligne de la pente de `SI_global`/`SI_safe`, détection de plateau (attracteur
-substrate-limited), de divergence (oscillation, explosion de `risk`), et de
-stagnation. *Livrable* : `convergence.rs`. *Acceptation* : détecte le plateau de
-la démo et signale une divergence injectée.
+**L2 — Détection de convergence / divergence / attracteur.** ✅
+`ConvergenceDetector` (`convergence.rs`) : pente par moindres carrés sur fenêtre
+glissante, `Trend::{Improving, Plateau, Diverging}`. Détecte le plateau de
+l'attracteur substrate-limited (utilisé par L1). *Testé.* À étendre : signaux de
+divergence basés sur `risk`/oscillation.
 
 **L3 — Boucles multi-échelles (nested loops).** Formaliser les cadences :
 boucle interne (apprentissage ΔS, chaque pas), boucle méta (ℳ, tous les *k*),
@@ -75,7 +74,7 @@ graine.
 SVG comparatifs reproductibles.
 
 ### Phasage
-1. **Socle** : L1 (pilote/arrêt) → L2 (convergence) → L5 (checkpoint/replay).
+1. **Socle** : ✅ L1 (pilote/arrêt) → ✅ L2 (convergence) → L5 (checkpoint/replay).
 2. **Sûreté & échelles** : L4 (disjoncteurs) → L3 (multi-échelles).
 3. **Pilotage & passage à l'échelle** : L6 (observabilité) → L7 (MCP) → L8 (swarm).
 4. **Mesure** : L9 (banc d'essai + ablations).
