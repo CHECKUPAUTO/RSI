@@ -54,10 +54,13 @@ pub mod forge_meta;
 pub mod forge_substrate;
 pub mod dynamics;
 pub mod json;
+pub mod knowledge;
 pub mod linalg;
+pub mod measured_substrate;
 pub mod memory;
 pub mod meta;
 pub mod plot;
+pub mod tasks;
 #[cfg(feature = "octasoma")]
 pub mod octasoma_memory;
 pub mod report;
@@ -80,6 +83,9 @@ pub use forge_meta::ForgeMetaSearch;
 pub use forge_substrate::ForgeSubstrate;
 pub use dynamics::{Dynamics, StabilityConfig, StepInfo};
 pub use json::Json;
+pub use knowledge::{CorpusKnowledge, KnowledgeSource, StaticKnowledge};
+pub use measured_substrate::MeasuredSubstrate;
+pub use tasks::{GroundedCapability, Task, TaskCorpus};
 pub use memory::{ContextMemory, LinearContextMemory};
 #[cfg(feature = "octasoma")]
 pub use octasoma_memory::OctaSomaMemory;

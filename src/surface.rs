@@ -190,6 +190,29 @@ impl IntelligenceSurface {
         dot(&self.weights, &c)
     }
 
+    /// SI_global **et son erreur-type de Monte-Carlo** (mean, stderr).
+    ///
+    /// `SI_global` est une moyenne pondérée sur un échantillon fini de Ω : son
+    /// estimation comporte un bruit d'échantillonnage. On l'estime par la
+    /// variance pondérée rapportée à la **taille effective d'échantillon de
+    /// Kish** `n_eff = 1 / Σ w_i²` :
+    ///   `stderr = sqrt( (Σ w_i (c_i − SI)²) · (Σ w_i²) )`.
+    /// Sert à rendre le garde-fou ε **adaptatif** (§4) : on ne pénalise pas une
+    /// variation inférieure au bruit d'échantillonnage.
+    pub fn si_global_stats(&self, state: &CognitiveState, substrate: &Substrate) -> (f64, f64) {
+        let c = self.real_capability(state, substrate);
+        let mean = dot(&self.weights, &c);
+        let mut wvar = 0.0;
+        let mut sum_w2 = 0.0;
+        for (&w, &ci) in self.weights.iter().zip(&c) {
+            let d = ci - mean;
+            wvar += w * d * d;
+            sum_w2 += w * w;
+        }
+        let stderr = (wvar * sum_w2).max(0.0).sqrt();
+        (mean, stderr)
+    }
+
     /// Diagnostic : la compétence est-elle bridée par le cognitif (Φ) ou par
     /// le substrat (g) ?
     pub fn bottleneck(&self, state: &CognitiveState, substrate: &Substrate) -> Bottleneck {

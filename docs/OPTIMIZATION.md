@@ -148,3 +148,43 @@ let agent = RSIAgent::new(state, substrate, surface, cfg, meta)
     .with_route_threshold(0.5)                            // §D
     .with_risk_config(RiskConfig::default());             // §7
 ```
+
+---
+
+## De-stylisation & robustesse (v0.10)
+
+Réponse aux limites identifiées au bilan produit — tout en cœur, sans dépendance.
+
+### #1 — Ancrer Ω/Φ sur des tâches réelles (`tasks.rs`)
+- `TaskCorpus` : espace de tâches **ancré sur des données** (profils d'exigences
+  sur (D,M,R,A,C,V), difficulté, importance), avec un corpus intégré
+  d'archétypes et un chargement **depuis JSON** (`TaskCorpus::from_json/load`).
+- `GroundedCapability` : compétence par **loi de Liebig** — Φ = minimum des
+  marges sur les composantes *requises* (le maillon faible plombe la tâche),
+  plus fidèle qu'un produit scalaire lissé.
+- `IntelligenceSurface::from_corpus(&corpus)` remplace l'échantillonnage
+  synthétique. La démo `rsi-full` tourne désormais sur ce corpus.
+
+### #2 — Bruit Monte-Carlo vs ε (`surface.rs`, `dynamics.rs`)
+- `IntelligenceSurface::si_global_stats` renvoie `(SI, erreur-type)` via la
+  variance pondérée et la taille effective d'échantillon de Kish.
+- `StabilityConfig.adaptive_epsilon` : la tolérance de non-régression devient
+  `ε + z·stderr`, donc on ne pénalise pas une variation **sous le bruit**.
+
+### #4 — Substrat mesuré sans GPU/Forge (`measured_substrate.rs`)
+- `MeasuredSubstrate` : `SubstrateImprover` **natif** qui chronomètre un vrai
+  kernel CPU (matmul tuilé vs naïf), balaie une grille de tuilages et calibre
+  l'efficience logicielle mesurée — portable partout, zéro dépendance. (Forge
+  reste disponible pour l'évolution de kernels SIMD/CUDA quand la toolchain est
+  présente.)
+
+### #5 — Composante D depuis une vraie source (`knowledge.rs`)
+- Port `KnowledgeSource` + `CorpusKnowledge` : ingère de vrais documents (en
+  mémoire ou un répertoire), extrait des **concepts distincts** et fait tendre
+  `D` vers un niveau saturant. `RSIAgent::with_knowledge`. Une source lourde
+  (PAPERS) se brancherait via un adaptateur en sous-processus, même trait.
+
+### #3 — Backends privés, cœur autonome (`agent.rs`)
+- `RSIAgent::active_backends()` : introspection des backends réels branchés. Le
+  cœur reste pleinement fonctionnel sans aucune feature (mémoire linéaire,
+  substrat mesuré natif, audit hash-chaîné, méta aléatoire/CMA-ES, corpus).
