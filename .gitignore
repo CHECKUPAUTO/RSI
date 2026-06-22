@@ -5,3 +5,6 @@ Cargo.lock
 # artefacts Forge (checkpoints sled)
 forge_checkpoint.json
 *.sled
+
+# artefacts de la démo rsi-full
+rsi_full_trajectory.*

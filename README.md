@@ -153,6 +153,18 @@ Chaque [`StepReport`](src/agent.rs) expose :
   avec export ingestable par CCOS. Feature `ccos` : délègue au vrai `EventLog`
   de CCOS (`cargo build --features ccos`, sans async/TLS).
 
+### Démo « tout intégré »
+
+Un agent réunissant les quatre backends + la criticité §7 :
+
+```bash
+cargo run --release --bin rsi-full --features "forge octasoma ccos" -- 30 2026
+```
+
+Affiche la trajectoire (SI, SI_safe, P_eff, risque, mode critique, goulot),
+vérifie l'intégrité du journal d'audit CCOS, rappelle un contexte via OctaSoma
+et exporte la trajectoire (CSV/JSON). Source : [`src/bin/rsi_full.rs`](src/bin/rsi_full.rs).
+
 ### Intégration agent IA / LLM
 
 ```bash

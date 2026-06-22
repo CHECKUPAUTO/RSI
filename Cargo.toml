@@ -6,6 +6,11 @@ description = "Recursive Self-Improvement — implémentation Rust du système g
 license = "PolyForm-Noncommercial-1.0.0"
 authors = ["Tarek Zekriti / CHECKUPAUTO"]
 
+[[bin]]
+name = "rsi-full"
+path = "src/bin/rsi_full.rs"
+required-features = ["forge", "octasoma", "ccos"]
+
 [lib]
 name = "rsi"
 path = "src/lib.rs"
