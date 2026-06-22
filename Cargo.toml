@@ -1,6 +1,6 @@
 [package]
 name = "rsi"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 description = "Recursive Self-Improvement — implémentation Rust du système géométrique unifié (v9)"
 license = "PolyForm-Noncommercial-1.0.0"

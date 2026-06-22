@@ -34,6 +34,12 @@ pub struct StabilityConfig {
     pub eta0: f64,
     /// Coefficient de P(S) (dissipation / oubli).
     pub forgetting: f64,
+    /// ε adaptatif : si vrai, la tolérance de non-régression devient
+    /// `ε + epsilon_z · stderr(SI_global)`, pour ne pas pénaliser une variation
+    /// sous le bruit d'échantillonnage Monte-Carlo (§2). `false` par défaut.
+    pub adaptive_epsilon: bool,
+    /// multiplicateur z de l'erreur-type dans l'ε adaptatif.
+    pub epsilon_z: f64,
 }
 
 impl Default for StabilityConfig {
@@ -43,6 +49,8 @@ impl Default for StabilityConfig {
             epsilon: 1e-3,
             eta0: 0.15,
             forgetting: 0.02,
+            adaptive_epsilon: false,
+            epsilon_z: 2.0,
         }
     }
 }
@@ -135,7 +143,13 @@ impl<'a> Dynamics<'a> {
         dt: f64,
     ) -> (CognitiveState, StepInfo) {
         let cfg = self.config;
-        let si_before = self.surface.si_global(state, substrate);
+        // ε effectif : adaptatif au bruit Monte-Carlo si demandé (§2).
+        let (si_before, eps) = if cfg.adaptive_epsilon {
+            let (si, se) = self.surface.si_global_stats(state, substrate);
+            (si, cfg.epsilon + cfg.epsilon_z * se)
+        } else {
+            (self.surface.si_global(state, substrate), cfg.epsilon)
+        };
 
         // 1) pas brut issu de la dynamique continue
         let mut delta = self.velocity(state, substrate).scaled(dt);
@@ -154,7 +168,7 @@ impl<'a> Dynamics<'a> {
         let mut si_after = self.surface.si_global(&candidate, substrate);
         let mut backtracks = 0u32;
         let mut factor = 1.0;
-        while si_after < si_before - cfg.epsilon && backtracks < 20 {
+        while si_after < si_before - eps && backtracks < 20 {
             factor *= 0.5;
             candidate = state.add(&delta.scaled(factor)).clipped(0.0, 1.0);
             si_after = self.surface.si_global(&candidate, substrate);
@@ -162,7 +176,7 @@ impl<'a> Dynamics<'a> {
         }
 
         // sécurité : si même un pas infinitésimal régresse, on reste sur place
-        if si_after < si_before - cfg.epsilon {
+        if si_after < si_before - eps {
             candidate = state.clone();
             si_after = si_before;
             factor = 0.0;

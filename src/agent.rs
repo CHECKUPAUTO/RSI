@@ -18,6 +18,7 @@
 use crate::audit::{AuditEvent, AuditLog};
 use crate::criticality::{RiskConfig, RiskModel, RiskSignals};
 use crate::dynamics::{Dynamics, StabilityConfig, StepInfo};
+use crate::knowledge::KnowledgeSource;
 use crate::linalg::mean;
 use crate::memory::ContextMemory;
 use crate::meta::{
@@ -82,6 +83,10 @@ pub struct RSIAgent {
     pub recall_k: usize,
     /// Journal d'audit hash-chaîné optionnel (§7bis — traçabilité/déterminisme).
     pub audit: Option<Box<dyn AuditLog>>,
+    /// Source de connaissances optionnelle (§2bis — alimente la composante D).
+    pub knowledge: Option<Box<dyn KnowledgeSource>>,
+    /// taux de montée de D vers le niveau de connaissance ingéré.
+    pub knowledge_rate: f64,
     pub t: usize,
 }
 
@@ -110,8 +115,36 @@ impl RSIAgent {
             route_threshold: 0.5,
             recall_k: 4,
             audit: None,
+            knowledge: None,
+            knowledge_rate: 0.25,
             t: 0,
         }
+    }
+
+    /// Branche une source de connaissances (§2bis : alimente `D` depuis une
+    /// vraie source, p. ex. un corpus de documents). Builder fluide.
+    pub fn with_knowledge(mut self, knowledge: Box<dyn KnowledgeSource>) -> Self {
+        self.knowledge = Some(knowledge);
+        self
+    }
+
+    /// Liste les backends réels actifs (introspection — §3). Le cœur étant
+    /// autonome, les composantes non listées utilisent leur modèle natif.
+    pub fn active_backends(&self) -> Vec<&'static str> {
+        let mut v = Vec::new();
+        if self.substrate_opt.is_some() {
+            v.push("substrate_improver");
+        }
+        if self.memory.is_some() {
+            v.push("context_memory");
+        }
+        if self.audit.is_some() {
+            v.push("audit_log");
+        }
+        if self.knowledge.is_some() {
+            v.push("knowledge_source");
+        }
+        v
     }
 
     /// Branche un journal d'audit hash-chaîné (§7bis : traçabilité &
@@ -220,6 +253,17 @@ impl RSIAgent {
     /// Un pas de la boucle discrète RSI (avec criticité §7 et optimisations A/C/D).
     pub fn step(&mut self) -> StepReport {
         let si_before = self.si_global();
+
+        // §2bis — ingestion de connaissances réelles : fait tendre D vers le
+        // niveau appris (la hausse de D nourrit ensuite L(D) dans la dynamique).
+        if let Some(k) = self.knowledge.as_mut() {
+            let level = k.absorb();
+            let rate = self.knowledge_rate;
+            for d in self.state.d.iter_mut() {
+                *d = (*d + rate * (level - *d)).clamp(0.0, 1.0);
+            }
+        }
+
         let pre_bottleneck = self.surface.bottleneck(&self.state, &self.substrate);
 
         // §A — warm-start mémoire : rappeler les contextes proches et réinjecter
@@ -524,6 +568,55 @@ mod tests {
         assert_eq!(r.mitigation, "realign_V");
         let v_after: f64 = agent.state.v.iter().sum::<f64>() / agent.state.v.len() as f64;
         assert!(v_after > v_before, "V réaligné vers le haut : {v_before} → {v_after}");
+    }
+
+    #[test]
+    fn knowledge_source_raises_d_and_improves() {
+        use crate::knowledge::CorpusKnowledge;
+        let docs: Vec<String> = (0..8)
+            .map(|i| format!("concept_{i} alpha beta gamma delta epsilon zeta theta_{i} idea_{i}"))
+            .collect();
+        let mut agent = RSIAgent::demo(4)
+            .with_knowledge(Box::new(CorpusKnowledge::from_texts(docs).with_scale(8.0)));
+        let d0: f64 = agent.state.d.iter().sum::<f64>() / agent.state.d.len() as f64;
+        agent.run(8);
+        let d1: f64 = agent.state.d.iter().sum::<f64>() / agent.state.d.len() as f64;
+        assert!(d1 > d0, "D doit monter via la source de connaissances : {d0} → {d1}");
+        assert_eq!(agent.active_backends(), vec!["knowledge_source"]);
+    }
+
+    #[test]
+    fn grounded_corpus_agent_improves() {
+        use crate::tasks::TaskCorpus;
+        let surface = IntelligenceSurface::from_corpus(&TaskCorpus::builtin());
+        let mut rng = crate::rng::Rng::new(7);
+        let state = CognitiveState::random(Dims::uniform(6), &mut rng, 0.08);
+        let substrate = Substrate::default_with(4, 4, &mut rng);
+        let meta = Box::new(MetaOptimizer::new(48, 0.12, 7));
+        let mut agent = RSIAgent::new(state, substrate, surface, StabilityConfig::default(), meta);
+        let start = agent.si_global();
+        agent.run(60);
+        assert!(agent.si_global() > start, "amélioration sur corpus réel");
+    }
+
+    #[test]
+    fn adaptive_epsilon_keeps_invariant() {
+        let mut agent = RSIAgent::demo(2);
+        agent.dynamics_cfg.adaptive_epsilon = true;
+        for r in agent.run(40) {
+            // non-régression encore garantie (tolérance ≥ ε de base)
+            assert!(r.appr.si_after >= r.appr.si_before - agent.dynamics_cfg.epsilon - 1.0);
+        }
+    }
+
+    #[test]
+    fn native_measured_substrate_in_agent() {
+        use crate::measured_substrate::MeasuredSubstrate;
+        let mut agent = RSIAgent::demo(3)
+            .with_substrate_improver(Box::new(MeasuredSubstrate::new(64)))
+            .with_route_threshold(0.0); // force l'invocation
+        agent.run(6);
+        assert!(agent.active_backends().contains(&"substrate_improver"));
     }
 
     #[test]

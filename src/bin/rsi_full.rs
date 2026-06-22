@@ -29,17 +29,31 @@ fn short(mode: &str) -> &str {
 }
 
 /// Sous-systèmes partagés (mêmes état/substrat/surface pour une comparaison équitable).
+/// La surface est **ancrée sur un corpus de tâches réel** (Ω = archétypes,
+/// compétence par loi de Liebig), au lieu d'un échantillonnage synthétique.
 fn build(seed: u64) -> (CognitiveState, Substrate, IntelligenceSurface) {
     let mut rng = Rng::new(seed);
     let state = CognitiveState::random(Dims::uniform(6), &mut rng, 0.08);
     let substrate = Substrate::default_with(4, 4, &mut rng);
-    let surface = IntelligenceSurface::sample(512, &mut rng);
+    let surface = IntelligenceSurface::from_corpus(&rsi::TaskCorpus::builtin());
     (state, substrate, surface)
+}
+
+/// Petit corpus de documents pour alimenter la composante D (connaissances).
+fn knowledge_docs() -> Vec<String> {
+    (0..12)
+        .map(|i| {
+            format!(
+                "domaine_{i} concept apprentissage raisonnement substrat memoire \
+                 valeurs criticite surface intelligence recursive technique_{i} methode_{i}"
+            )
+        })
+        .collect()
 }
 
 fn integrated(seed: u64, s: &CognitiveState, sub: &Substrate, surf: &IntelligenceSurface) -> RSIAgent {
     let dim = s.size();
-    RSIAgent::new(
+    let mut agent = RSIAgent::new(
         s.clone(),
         sub.clone(),
         surf.clone(),
@@ -49,8 +63,12 @@ fn integrated(seed: u64, s: &CognitiveState, sub: &Substrate, surf: &Intelligenc
     .with_substrate_improver(Box::new(ForgeSubstrate::new(96, 2, 6, seed ^ 0x5B)))
     .with_memory(Box::new(rsi::OctaSomaMemory::new(dim, seed)))
     .with_audit(Box::new(CcosAudit::new(format!("rsi-{seed}"))))
+    .with_knowledge(Box::new(rsi::CorpusKnowledge::from_texts(knowledge_docs()).with_scale(12.0)))
     // seuil de criticité plus strict pour que les réponses actives s'engagent
-    .with_risk_config(RiskConfig { rpn_max: 0.3, ..RiskConfig::default() })
+    .with_risk_config(RiskConfig { rpn_max: 0.3, ..RiskConfig::default() });
+    // ε adaptatif au bruit Monte-Carlo (corpus = petit Ω, donc estimateur bruité)
+    agent.dynamics_cfg.adaptive_epsilon = true;
+    agent
 }
 
 fn main() {
