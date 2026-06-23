@@ -139,6 +139,17 @@ Chaque [`StepReport`](src/agent.rs) expose :
 - **Export CSV / JSON** de la trajectoire (`report.rs`, flags `--csv`/`--json`).
 - **API** orientée commandes JSON (`api.rs`, `RsiApi`).
 - **Serveur MCP** (`rsi-mcp`) pour piloter le système depuis un agent IA / LLM.
+- **Moteur d'auto-amélioration piloté par LLM** (`llm.rs`, `ascent.rs`) — « le
+  LLM propose, le moteur dispose » : le LLM ne produit que du texte, le moteur
+  parse, valide (`safety_check`), évalue en sandbox et **adopte élitistement**
+  (strictement meilleur ET sûr), sous garde-fous bornés (`LlmGuard` : budget,
+  anti-overfitting). Backends interchangeables : **Ollama** local (défaut),
+  **Claude** (transport injecté), mock déterministe. Trois domaines : synthèse
+  symbolique, configuration (JSON), prompts (rejet d'injection). Pilotable en
+  **autonome** (`ascend_llm`), via **MCP** (`rsi_refine_new`/`incumbent`/
+  `evaluate`/`propose`, multi-domaine, checkpoint/resume) ou en **CLI**
+  (`rsi-refine`). Voir [`docs/LLM_INTEGRATION.md`](docs/LLM_INTEGRATION.md) et
+  [`docs/SAFETY.md`](docs/SAFETY.md).
 - **Auto-connexion** (`rsi-connect` + `scripts/auto-connect.sh`) aux runtimes
   d'agents (openclaw, hermes-agent, …) sans intervention humaine.
 - **Backends réels** (features optionnelles, cœur sans dépendance par défaut) —
