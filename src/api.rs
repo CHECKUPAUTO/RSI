@@ -110,6 +110,9 @@ trait RefineDomain {
     /// Examine une proposition : parse → sûreté → score → adoption si
     /// **strictement** meilleure ET sûre.
     fn propose_one(&mut self, text: &str) -> ProposeStatus;
+    /// Restaure un incumbent depuis son texte (reprise de session) : parse +
+    /// `safety_check`, sans contrainte d'amélioration. `Err` si invalide.
+    fn set_incumbent(&mut self, text: &str) -> Result<(), String>;
 }
 
 /// Session de **raffinement piloté par LLM** : le client (un LLM) lit
@@ -119,6 +122,7 @@ trait RefineDomain {
 struct RefineSession {
     domain: Box<dyn RefineDomain>,
     descriptor: String,
+    config: Json,
     proposals_seen: usize,
     accepted: usize,
     rejected_unsafe: usize,
@@ -190,6 +194,12 @@ impl RefineDomain for SynthDomain {
             }
         }
     }
+    fn set_incumbent(&mut self, text: &str) -> Result<(), String> {
+        let expr = Expr::parse(text)?;
+        self.task.safety_check(&expr).map_err(|v| v.0)?;
+        self.incumbent = expr;
+        Ok(())
+    }
 }
 
 /// Domaine concret : réglage de configuration (`Cand = TuneConfig`).
@@ -255,6 +265,12 @@ impl RefineDomain for TuneDomain {
                 }
             }
         }
+    }
+    fn set_incumbent(&mut self, text: &str) -> Result<(), String> {
+        let cfg = TuneConfig::parse(text)?;
+        self.task.safety_check(&cfg).map_err(|v| v.0)?;
+        self.incumbent = cfg;
+        Ok(())
     }
 }
 
@@ -323,6 +339,15 @@ impl RefineDomain for PromptDomain {
             ProposeStatus::Worse { pretty: p, score: fit }
         }
     }
+    fn set_incumbent(&mut self, text: &str) -> Result<(), String> {
+        let p = text.trim().to_string();
+        if p.is_empty() {
+            return Err("prompt vide".to_string());
+        }
+        self.task.safety_check(&p).map_err(|v| v.0)?;
+        self.incumbent = p;
+        Ok(())
+    }
 }
 
 /// Gestionnaire de sessions RSI piloté par commandes JSON.
@@ -357,6 +382,8 @@ impl RsiApi {
             "incumbent" => self.cmd_incumbent(params),
             "evaluate" => self.cmd_evaluate(params),
             "propose" => self.cmd_propose(params),
+            "refine_save" => self.cmd_refine_save(params),
+            "refine_load" => self.cmd_refine_load(params),
             other => Err(format!("commande inconnue : '{other}'")),
         }
     }
@@ -562,45 +589,11 @@ impl RsiApi {
         if !self.refines.contains_key(&id) && self.refines.len() >= MAX_SESSIONS {
             return Err(format!("limite de {MAX_SESSIONS} sessions de raffinement atteinte"));
         }
-        let domain_name = params.get("domain").and_then(|v| v.as_str()).unwrap_or("synthesis");
-
-        let (domain, descriptor): (Box<dyn RefineDomain>, String) = match domain_name {
-            "synthesis" => {
-                let target = params
-                    .get("target")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("quadratic")
-                    .to_string();
-                let f = target_fn(&target)?;
-                let lo = params.get("lo").and_then(|v| v.as_f64()).unwrap_or(-3.0);
-                let hi = params.get("hi").and_then(|v| v.as_f64()).unwrap_or(3.0);
-                if !lo.is_finite() || !hi.is_finite() || hi <= lo {
-                    return Err("intervalle invalide : exiger lo < hi finis".into());
-                }
-                let n = bounded(params, "n", 30, 4, MAX_REFINE_POINTS);
-                let seed = params.get("seed").and_then(|v| v.as_u64()).unwrap_or(2026);
-                let task = SymbolicSynthesis::from_target_split(f, lo, hi, n, seed);
-                let incumbent = task.seed_candidate();
-                (Box::new(SynthDomain { task, incumbent }), format!("synthesis:{target}"))
-            }
-            "tuning" => {
-                let task = ConfigTuning::new();
-                let incumbent = task.seed_candidate();
-                (Box::new(TuneDomain { task, incumbent }), "tuning".to_string())
-            }
-            "prompt" => {
-                let task = PromptOpt::new();
-                let incumbent = task.seed_candidate();
-                (Box::new(PromptDomain { task, incumbent }), "prompt".to_string())
-            }
-            other => {
-                return Err(format!("domaine inconnu : '{other}' (synthesis|tuning|prompt)"))
-            }
-        };
-
+        let (domain, descriptor) = build_domain(params)?;
         let s = RefineSession {
             domain,
             descriptor,
+            config: params.clone(),
             proposals_seen: 0,
             accepted: 0,
             rejected_unsafe: 0,
@@ -614,6 +607,57 @@ impl RsiApi {
         out.set("ok", Json::Bool(true))
             .set("id", Json::Str(id))
             .set("incumbent", info);
+        Ok(out)
+    }
+
+    /// Sérialise l'état d'une session de raffinement (config + incumbent +
+    /// compteurs) pour reprise ultérieure (`refine_load`).
+    fn cmd_refine_save(&mut self, params: &Json) -> ApiResult {
+        let id = Self::session_id(params);
+        let s = self.refine_mut(&id)?;
+        let mut state = Json::obj();
+        state
+            .set("config", s.config.clone())
+            .set("incumbent", Json::Str(s.domain.incumbent_pretty()))
+            .set("accepted", Json::Num(s.accepted as f64))
+            .set("proposals_seen", Json::Num(s.proposals_seen as f64))
+            .set("rejected_unsafe", Json::Num(s.rejected_unsafe as f64))
+            .set("rejected_worse", Json::Num(s.rejected_worse as f64))
+            .set("rejected_unparsed", Json::Num(s.rejected_unparsed as f64));
+        let mut out = Json::obj();
+        out.set("ok", Json::Bool(true)).set("id", Json::Str(id)).set("state", state);
+        Ok(out)
+    }
+
+    /// Reprend une session de raffinement depuis un état sérialisé (`refine_save`).
+    fn cmd_refine_load(&mut self, params: &Json) -> ApiResult {
+        let id = Self::session_id(params);
+        if !self.refines.contains_key(&id) && self.refines.len() >= MAX_SESSIONS {
+            return Err(format!("limite de {MAX_SESSIONS} sessions de raffinement atteinte"));
+        }
+        let state = params.get("state").ok_or("paramètre 'state' requis")?;
+        let config = state.get("config").cloned().ok_or("state.config manquant")?;
+        let (mut domain, descriptor) = build_domain(&config)?;
+        if let Some(text) = state.get("incumbent").and_then(|v| v.as_str()) {
+            domain
+                .set_incumbent(text)
+                .map_err(|e| format!("incumbent du checkpoint invalide : {e}"))?;
+        }
+        let get = |k: &str| state.get(k).and_then(|v| v.as_usize()).unwrap_or(0);
+        let s = RefineSession {
+            domain,
+            descriptor,
+            config,
+            proposals_seen: get("proposals_seen"),
+            accepted: get("accepted"),
+            rejected_unsafe: get("rejected_unsafe"),
+            rejected_worse: get("rejected_worse"),
+            rejected_unparsed: get("rejected_unparsed"),
+        };
+        let info = incumbent_json(&s);
+        self.refines.insert(id.clone(), s);
+        let mut out = Json::obj();
+        out.set("ok", Json::Bool(true)).set("id", Json::Str(id)).set("incumbent", info);
         Ok(out)
     }
 
@@ -742,6 +786,43 @@ impl RsiApi {
             .set("results", Json::Arr(results))
             .set("incumbent", incumbent_json(s));
         Ok(out)
+    }
+}
+
+/// Construit le domaine concret d'une session de raffinement depuis sa config
+/// JSON (partagé par `refine_new` et `refine_load`).
+fn build_domain(params: &Json) -> Result<(Box<dyn RefineDomain>, String), String> {
+    let domain_name = params.get("domain").and_then(|v| v.as_str()).unwrap_or("synthesis");
+    match domain_name {
+        "synthesis" => {
+            let target = params
+                .get("target")
+                .and_then(|v| v.as_str())
+                .unwrap_or("quadratic")
+                .to_string();
+            let f = target_fn(&target)?;
+            let lo = params.get("lo").and_then(|v| v.as_f64()).unwrap_or(-3.0);
+            let hi = params.get("hi").and_then(|v| v.as_f64()).unwrap_or(3.0);
+            if !lo.is_finite() || !hi.is_finite() || hi <= lo {
+                return Err("intervalle invalide : exiger lo < hi finis".into());
+            }
+            let n = bounded(params, "n", 30, 4, MAX_REFINE_POINTS);
+            let seed = params.get("seed").and_then(|v| v.as_u64()).unwrap_or(2026);
+            let task = SymbolicSynthesis::from_target_split(f, lo, hi, n, seed);
+            let incumbent = task.seed_candidate();
+            Ok((Box::new(SynthDomain { task, incumbent }), format!("synthesis:{target}")))
+        }
+        "tuning" => {
+            let task = ConfigTuning::new();
+            let incumbent = task.seed_candidate();
+            Ok((Box::new(TuneDomain { task, incumbent }), "tuning".to_string()))
+        }
+        "prompt" => {
+            let task = PromptOpt::new();
+            let incumbent = task.seed_candidate();
+            Ok((Box::new(PromptDomain { task, incumbent }), "prompt".to_string()))
+        }
+        other => Err(format!("domaine inconnu : '{other}' (synthesis|tuning|prompt)")),
     }
 }
 
@@ -921,6 +1002,8 @@ de stabilité (‖ΔS‖<λ et non-régression de SI_global)."
         ("incumbent", "Renvoie l'incumbent courant (expression, score train, score held-out, compteurs). Params: id."),
         ("evaluate", "Évalue un candidat SANS l'adopter (sonde). Params: id, candidate (texte d'expression). Renvoie score, held-out, safe, would_adopt."),
         ("propose", "Soumet des propositions ; le serveur parse, vérifie la sûreté, score et n'adopte qu'élitistement (strictement meilleur ET sûr). Params: id, proposals (tableau de chaînes) ou candidate (texte). Le LLM ne contrôle aucun garde-fou."),
+        ("refine_save", "Sérialise l'état d'une session de raffinement (config + incumbent + compteurs) pour reprise. Params: id. Renvoie 'state'."),
+        ("refine_load", "Reprend une session de raffinement depuis un 'state' (cf. refine_save). Params: id, state."),
     ];
     let arr: Vec<Json> = commands
         .iter()
@@ -1146,6 +1229,53 @@ mod tests {
         let mut c = Json::obj();
         c.set("id", Json::Str("d".into())).set("domain", Json::Str("magic".into()));
         assert!(api.handle("refine_new", &c).is_err());
+    }
+
+    #[test]
+    fn refine_save_and_load_restores_incumbent_and_counters() {
+        let mut api = RsiApi::new();
+        refine(&mut api, "a"); // synthèse (défaut)
+        let mut p = Json::obj();
+        p.set("id", Json::Str("a".into()))
+            .set("proposals", Json::Arr(vec![Json::Str("x*x + 1".into())]));
+        api.handle("propose", &p).unwrap();
+
+        // sauvegarde
+        let mut sv = Json::obj();
+        sv.set("id", Json::Str("a".into()));
+        let saved = api.handle("refine_save", &sv).unwrap();
+        let state = saved.get("state").unwrap().clone();
+        let score_a = saved
+            .get("state")
+            .and_then(|s| s.get("incumbent"))
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .to_string();
+
+        // reprise dans une nouvelle session 'b'
+        let mut ld = Json::obj();
+        ld.set("id", Json::Str("b".into())).set("state", state);
+        let loaded = api.handle("refine_load", &ld).unwrap();
+        let inc = loaded.get("incumbent").unwrap();
+        // incumbent et compteurs restaurés
+        assert_eq!(inc.get("pretty").and_then(|v| v.as_str()), Some(score_a.as_str()));
+        assert!(inc.get("score").and_then(|v| v.as_f64()).unwrap() > 0.9);
+        assert_eq!(inc.get("accepted").and_then(|v| v.as_f64()), Some(1.0));
+    }
+
+    #[test]
+    fn refine_load_rejects_unsafe_incumbent() {
+        let mut api = RsiApi::new();
+        refine(&mut api, "a");
+        let mut sv = Json::obj();
+        sv.set("id", Json::Str("a".into()));
+        let mut state = api.handle("refine_save", &sv).unwrap().get("state").unwrap().clone();
+        // corrompt l'incumbent avec une expression trop complexe (> MAX_EXPR_SIZE)
+        let huge = (0..40).map(|_| "x").collect::<Vec<_>>().join(" + ");
+        state.set("incumbent", Json::Str(huge));
+        let mut ld = Json::obj();
+        ld.set("id", Json::Str("c".into())).set("state", state);
+        assert!(api.handle("refine_load", &ld).is_err());
     }
 
     #[test]

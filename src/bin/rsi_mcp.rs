@@ -263,6 +263,23 @@ fn tools_list() -> Json {
             ]),
             &[],
         ),
+        tool(
+            "rsi_refine_save",
+            "Sérialise l'état d'une session de raffinement (config + incumbent + compteurs) \
+             pour reprise ultérieure. Renvoie un objet 'state' réutilisable par rsi_refine_load.",
+            props(&[id()]),
+            &[],
+        ),
+        tool(
+            "rsi_refine_load",
+            "Reprend une session de raffinement depuis un 'state' produit par rsi_refine_save \
+             (checkpoint/resume d'une optimisation pilotée par LLM).",
+            props(&[
+                id(),
+                ("state", prop("object", "État sérialisé renvoyé par rsi_refine_save.")),
+            ]),
+            &["state"],
+        ),
     ];
 
     let mut out = Json::obj();
