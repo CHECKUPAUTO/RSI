@@ -400,5 +400,11 @@ Le LLM est une *source de propositions sous contrainte*, pas un pilote.
   scrapeable, **sans dépendance**) + événements `tracing` derrière la feature
   `observability` (no-op sans elle, via `src/obs.rs` ; instrumente adoption/rejet
   de propositions). Le cœur reste std-only.
-- ⏭️ **Reste** : SIMD `wide` (derrière feature, relâche la repro bit-exacte
-  cross-build) ; vérification formelle (P0.4).
+- ✅ **SIMD** (feature `simd`, OFF par défaut) : `dot`/`mean` vectorisés via
+  `wide` (sûr, stable). Réduction par 4 voies + combinaison à ordre fixe ⇒
+  déterministe à l'intérieur d'un build SIMD ; relâche assumé de la repro
+  bit-exacte *cross-build* (documenté dans `docs/SAFETY.md`). Gain modéré : le
+  coût dominant de `si_global` est l'évaluation Φ/g par tâche (trait objects),
+  non la réduction finale. 132 tests verts sous `--features simd`.
+- ⏭️ **Reste** : vérification formelle creusot/loom (P0.4) — outillage + temps
+  expert ; non bloquant.

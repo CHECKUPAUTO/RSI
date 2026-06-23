@@ -50,6 +50,10 @@ wasm = ["dep:wasmi", "dep:wat"]
 # (le cœur reste std-only). Les métriques Prometheus (commande `metrics`) sont,
 # elles, toujours disponibles et sans dépendance.
 observability = ["dep:tracing"]
+# SIMD : vectorise les réductions linalg (dot/mean) via `wide` (stable, sûr).
+# ⚠️ Relâche la repro BIT-EXACTE *cross-build* (l'ordre de sommation change) ;
+# le déterminisme reste intact À L'INTÉRIEUR d'un build SIMD. OFF par défaut.
+simd = ["dep:wide"]
 
 [dependencies]
 forge-core = { git = "https://github.com/CHECKUPAUTO/forge", optional = true }
@@ -62,6 +66,7 @@ ureq = { version = "2", optional = true }
 wasmi = { version = "0.31", optional = true }
 wat = { version = "1", optional = true }
 tracing = { version = "0.1", optional = true }
+wide = { version = "0.7", optional = true }
 
 [[bin]]
 name = "rsi-demo"

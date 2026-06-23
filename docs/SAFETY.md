@@ -151,9 +151,13 @@ une variation sous le bruit Monte-Carlo. Évite les faux backtracks.
   **fuel borné** (terminaison garantie). Tout module déclarant un import ou
   dépassant le fuel est rejeté/trappé. C'est la condition d'un domaine exécutant,
   désormais satisfaite.
-- **Le déterminisme est bit-exact en séquentiel.** Toute parallélisation future
-  de l'évaluation devra préserver une réduction à ordre fixe, sinon
-  `same_seed ⇒ same_audit_head` ne tient plus (cf. spike §6).
+- **Le déterminisme est bit-exact à configuration fixe.** L'évaluation
+  parallèle (MetaOptimizer/CMA) préserve l'ordre d'index → bit-exacte. En
+  revanche la feature **`simd`** (OFF par défaut) vectorise les réductions
+  `dot`/`mean` : l'ordre de sommation change, donc les valeurs (et l'audit head)
+  diffèrent d'un build scalaire — `same_seed ⇒ same_audit_head` ne tient plus
+  qu'**à feature égale** (un build SIMD reste déterministe avec lui-même).
+  Ne pas comparer des sorties entre un build scalaire et un build SIMD.
 
 ---
 
