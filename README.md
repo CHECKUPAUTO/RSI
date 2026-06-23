@@ -215,6 +215,9 @@ Voir le guide complet : [`docs/INTEGRATION.md`](docs/INTEGRATION.md)
 autonome ou interactive via MCP, sous garde-fous) :
 [`docs/LLM_INTEGRATION.md`](docs/LLM_INTEGRATION.md).
 
+**Garde-fous, garanties et limites** (ce qui est garanti vs hypothèse de
+modèle) : [`docs/SAFETY.md`](docs/SAFETY.md).
+
 ### Paper scientifique
 
 Formalisation, implémentation et résultats expérimentaux :

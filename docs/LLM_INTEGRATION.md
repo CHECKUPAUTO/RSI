@@ -203,4 +203,4 @@ objet JSON) comme modèles. Pour l'exposer via MCP, ajouter une implémentation 
 - Cœur LLM : `src/llm.rs`
 - Domaines : `src/synthesis.rs`, `src/tuning.rs`
 - Façade / outils : `src/api.rs`, `src/bin/rsi_mcp.rs`
-- Garde-fous de sûreté du cœur : `docs/SAFETY.md` *(à venir)*
+- Garde-fous de sûreté du cœur : `docs/SAFETY.md`
