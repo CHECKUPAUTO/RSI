@@ -424,5 +424,23 @@ Le LLM est une *source de propositions sous contrainte*, pas un pilote.
   donc **pas publiable tel quel** ; il faudrait d'abord publier ces 4 crates amont
   (ou les sortir du manifeste publié). La distribution se fait donc par **source +
   Docker/Nix** (validés), pas par registre. Aucune publication effectuée.
+- ✅ **Intégration de `soul-rsi` (boucle Darwin–Gödel / STOP)** : port natif et
+  **std-only** dans `src/dgm.rs` (le clone amont est un crate de workspace
+  SoulSystem — deps `workspace = true` + `path = "../soul-automodify"` — donc non
+  consommable en git-dep ; le porter est la seule voie correcte). Couvre tout le
+  contenu du dépôt : `Patch`/`Fitness` (barrière lexicographique compile ▸ tests
+  ▸ score), `Variant`/`Archive` (population ouverte, sélection qualité×nouveauté),
+  `WorkspaceSnapshot`/`promote_to_live` (copie isolée jetable, arbre vivant intact),
+  `CargoEvaluator`/`ClosureEvaluator`, `LlmProposer` (enveloppe stricte +
+  liste blanche), `DgmEngine` (Reflexion). **Réutilise** les primitives RSI
+  (`rng::Rng`, `sha256`, `json`, `obs`) au lieu des deps externes de l'amont
+  (serde/uuid/chrono/tempfile/thiserror/tracing/soul_automodify). **Adaptateur**
+  `LlmCodeModel` ⇒ pilotable par les backends RSI (Ollama/Claude). **Améliorations
+  vs amont** : IDs de variantes déterministes (hash de lignée, ≠ UUID aléatoire)
+  ⇒ archive bit-exacte reproductible ; horloge logique `seq` (≠ horodatage mur) ;
+  sous-processus `cargo` **bornés** (timeout + sortie plafonnée). 23 tests + 1
+  doctest + exemple `dgm_selfimprove`. Sûreté documentée (`SAFETY.md` §5bis + §8 :
+  exécution de code réel, isolation = snapshot + sous-process borné, **pas** un
+  bac à sable syscall). 155 tests au total en défaut, clippy 0 warning.
 - ⏭️ **Reste** : vérification formelle creusot/loom (P0.4) — outillage + temps
   expert ; non bloquant.

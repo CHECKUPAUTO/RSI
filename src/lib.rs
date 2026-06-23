@@ -51,6 +51,9 @@ pub mod checkpoint;
 pub mod cma;
 pub mod convergence;
 pub mod criticality;
+// Boucle d'auto-amélioration empirique (Darwin–Gödel / STOP) — port std-only de
+// `soul-rsi` : propose un patch → build+test en copie isolée → garde si meilleur.
+pub mod dgm;
 pub mod loop_ctrl;
 #[cfg(feature = "forge")]
 pub mod forge_meta;

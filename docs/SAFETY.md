@@ -97,6 +97,32 @@ une variation sous le bruit Monte-Carlo. Évite les faux backtracks.
 - **Budget** : `LlmGuard.max_llm_calls` / `max_wall_clock` bornent la boucle
   (terminaison côté coût). `LlmStop::BudgetExhausted`.
 
+### 5bis. Boucle d'auto-amélioration empirique — DGM/STOP (`src/dgm.rs`)
+
+Contrairement aux domaines ci-dessus (qui n'exécutent jamais la sortie du
+modèle), la boucle **Darwin–Gödel / STOP** modifie du **code source réel** et
+peut le **construire et le tester** (`CargoEvaluator`). Ses garde-fous :
+
+- **Liste blanche** (`LlmProposer.allowed_paths`) : une proposition ciblant un
+  fichier hors liste est **écartée** avant toute application.
+- **Patch exact & non ambigu** : `find` doit apparaître **exactement une fois**
+  (motif absent ou multiple ⇒ rejet — jamais d'édition silencieuse de la
+  mauvaise occurrence).
+- **Isolation** : chaque candidat est évalué sur un [`WorkspaceSnapshot`]
+  **jetable** (copie temp, `target/.git/node_modules` sautés), supprimé au
+  `Drop`. L'évasion hors-racine (`..`, chemins absolus) est rejetée
+  (`PathNotAllowed`, vérif après canonicalisation).
+- **Barrière empirique** : adoption ssi `Fitness::is_better_than(parent)` sous
+  l'ordre lexicographique **(compile ▸ non-régression de tests ▸ score)** ; un
+  build cassé ne peut jamais dominer (`broken` = −∞), un score NaN non plus.
+- **Arbre vivant intouché** : la boucle ne mute jamais le dépôt réel ; seule
+  [`promote_to_live`] le fait, et l'appelant la garde sur une évaluation
+  **tout-au-vert**. Chaque édition est sauvegardée (`.bak`) donc réversible.
+- **Sous-processus bornés** : `cargo build`/`test` sont lancés avec **timeout**
+  (défaut 300 s) et **sortie plafonnée** (défaut 4 MiB/flux), comme `papers`.
+- **Déterminisme** : IDs de variantes = hash SHA-256 de la lignée (≠ UUID
+  aléatoire), horloge logique `seq` ⇒ archive **bit-exacte reproductible**.
+
 ---
 
 ## 6. Durcissement ressources (entrées non fiables)
@@ -110,6 +136,7 @@ une variation sous le bruit Monte-Carlo. Évite les faux backtracks.
 | API dimensions | |Ω|, dim, substrat, pas bornés | `MAX_TASKS=50_000`, `MAX_DIM=1_024`, `MAX_SUBSTRATE=256`, `MAX_STEPS=100_000` |
 | Raffinement | points / propositions bornés | `MAX_REFINE_POINTS=4_096`, `MAX_PROPOSALS_PER_CALL=64` |
 | Sous-processus `papers` | timeout + sortie bornée | `30 s` / `8 MiB` (`knowledge.rs`) |
+| Sous-processus `cargo` (DGM) | timeout + sortie bornée par flux | `300 s` / `4 MiB` (`dgm.rs`) |
 | Synthèse | taille d'AST adoptable bornée | `MAX_EXPR_SIZE = 25` (`synthesis.rs`) |
 | Accès numériques JSON | rejet NaN/∞/négatifs | `as_u64`/`as_usize` (`json.rs`) |
 
@@ -117,7 +144,9 @@ une variation sous le bruit Monte-Carlo. Évite les faux backtracks.
 
 ## 7. Couverture de tests
 
-- **120 tests** unitaires/intégration, déterministes.
+- **155 tests** unitaires/intégration, déterministes (dont **23** pour la boucle
+  DGM/STOP de `src/dgm.rs` : barrière de fitness, isolation du snapshot, rejet de
+  patch ambigu, liste blanche, déterminisme bout-en-bout).
 - **Property testing in-tree** (RNG déterministe, std-only, sans dépendance) :
   - garde-fous de la dynamique sur configs extrêmes
     (`guardrails_hold_under_random_extreme_configs`, 1 200 configs × 12 pas) ;
@@ -151,6 +180,18 @@ une variation sous le bruit Monte-Carlo. Évite les faux backtracks.
   **fuel borné** (terminaison garantie). Tout module déclarant un import ou
   dépassant le fuel est rejeté/trappé. C'est la condition d'un domaine exécutant,
   désormais satisfaite.
+- **La boucle DGM/STOP exécute du code source réel — et ce n'est PAS un bac à
+  sable syscall.** `CargoEvaluator` (`src/dgm.rs`) **construit et teste** le code
+  candidat via `cargo` : l'isolation est une **copie temporaire jetable** du
+  workspace (les écritures du candidat ne touchent pas l'arbre vivant) plus un
+  **sous-processus borné** (timeout + sortie plafonnée), mais le `cargo
+  build/test` s'exécute avec **les privilèges du processus hôte** (pas de
+  confinement réseau/fs/syscall comme pour WASM). Les garde-fous réels sont : la
+  **liste blanche** de fichiers, le **patch exact non ambigu**, la **barrière
+  empirique** (compile ▸ tests ▸ score), et le fait que l'arbre vivant n'est mué
+  que par `promote_to_live` (gardé tout-au-vert, avec sauvegarde réversible).
+  **Ne lancer la boucle qu'avec un évaluateur de confiance, sur du code de
+  confiance.** Pour du code non fiable, préférer le domaine WASM.
 - **Le déterminisme est bit-exact à configuration fixe.** L'évaluation
   parallèle (MetaOptimizer/CMA) préserve l'ordre d'index → bit-exacte. En
   revanche la feature **`simd`** (OFF par défaut) vectorise les réductions

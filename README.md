@@ -310,6 +310,39 @@ stabilise (patience), 100 % des cas de test réussis, `is_monotone() == true`.
 > `cargo run --features scirust --release --example self_improve_real`. Détails :
 > [`SCIRUST_ACTIVATION.md`](SCIRUST_ACTIVATION.md).
 
+## Auto-amélioration **empirique** du code (Darwin–Gödel / STOP)
+
+Là où l'agent ci-dessus améliore des objets abstraits (expressions, configs,
+prompts) que le moteur *interprète*, le module [`src/dgm.rs`](src/dgm.rs) ajoute
+la variante **empirique sur du code source réel** — port natif **std-only** du
+crate [`soul-rsi`](https://github.com/CHECKUPAUTO/soul-rsi) :
+
+> propose un patch `find → replace` ▸ l'évalue dans une **copie isolée** du dépôt
+> (`cargo build` + `cargo test`) ▸ ne le **garde que s'il est prouvé meilleur**
+> (compile ▸ non-régression de tests ▸ score) ▸ l'**archive** comme tremplin
+> réutilisable ▸ recommence.
+
+```bash
+cargo run --release --example dgm_selfimprove   # boucle jouet, déterministe, hors-ligne
+```
+
+- **STOP** (Zelikman 2023) : le proposeur est interchangeable
+  ([`Proposer`]) ; [`LlmProposer`] le branche sur n'importe quel backend RSI via
+  [`LlmCodeModel`] (Ollama, Claude…). La boucle ne fait **jamais** confiance à
+  l'auto-évaluation du modèle.
+- **Darwin Gödel Machine** (Zhang 2025) : [`Archive`] ouverte, sélection de
+  parent qualité × nouveauté, acceptation **empirique**.
+- **Reflexion** (Shinn 2023) : les rejets récents sont re-injectés au proposeur.
+
+**Sûreté** (cf. [`docs/SAFETY.md`](docs/SAFETY.md) §5bis) : liste blanche de
+fichiers éditables, patch exact **non ambigu** (motif unique), snapshot jetable,
+sous-processus `cargo` **bornés** (timeout + sortie plafonnée), et l'arbre vivant
+n'est mué que par [`promote_to_live`] (gardé tout-au-vert, sauvegarde réversible).
+IDs de variantes déterministes (hash de lignée) ⇒ archive **reproductible**.
+⚠️ `CargoEvaluator` exécute du code réel : à n'utiliser que sur du **code de
+confiance** (ce n'est pas un bac à sable syscall ; pour du code non fiable,
+préférer le domaine WASM).
+
 ## Architecture
 
 ```
@@ -324,6 +357,7 @@ src/
 ├── meta.rs         §5  ℳ, trait MetaSearch, recherche aléatoire + CMA-ES
 ├── cma.rs          §5  sep-CMA-ES (covariance diagonale)
 ├── agent.rs        §5/§6  boucle discrète complète
+├── dgm.rs          auto-amélioration empirique du code (Darwin–Gödel/STOP, port soul-rsi)
 ├── json.rs         (dé)sérialisation JSON std-only
 ├── report.rs       export CSV / JSON de la trajectoire
 ├── api.rs          façade RsiApi (commandes JSON in/out)
