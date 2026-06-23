@@ -369,6 +369,7 @@ impl RsiApi {
     pub fn handle(&mut self, command: &str, params: &Json) -> ApiResult {
         match command {
             "describe" => Ok(describe()),
+            "health" => Ok(self.cmd_health()),
             "create" => self.cmd_create(params),
             "step" => self.cmd_step(params),
             "run" => self.cmd_run(params),
@@ -553,6 +554,42 @@ impl RsiApi {
             .set("rows", Json::Num(s.history.len() as f64))
             .set("data", Json::Str(data));
         Ok(out)
+    }
+
+    /// Introspection / santé du serveur : sessions, pas cumulés, intégrité de
+    /// l'audit hash-chaîné, activité de raffinement. Sans dépendance (un export
+    /// Prometheus/OTel nécessiterait une crate, hors périmètre std-only).
+    fn cmd_health(&self) -> Json {
+        let mut total_steps = 0usize;
+        let mut audited = 0usize;
+        let mut intact = 0usize;
+        for s in self.sessions.values() {
+            total_steps += s.agent.t;
+            if s.agent.audit_len() > 0 {
+                audited += 1;
+                if s.agent.audit_verify() {
+                    intact += 1;
+                }
+            }
+        }
+        let mut proposals = 0usize;
+        let mut accepted = 0usize;
+        for r in self.refines.values() {
+            proposals += r.proposals_seen;
+            accepted += r.accepted;
+        }
+        let mut out = Json::obj();
+        out.set("ok", Json::Bool(true))
+            .set("version", Json::Str(env!("CARGO_PKG_VERSION").to_string()))
+            .set("sessions", Json::Num(self.sessions.len() as f64))
+            .set("refine_sessions", Json::Num(self.refines.len() as f64))
+            .set("total_steps", Json::Num(total_steps as f64))
+            .set("audited_sessions", Json::Num(audited as f64))
+            // true si toutes les sessions auditées sont intègres (0 audité ⇒ true)
+            .set("audit_intact", Json::Bool(audited == intact))
+            .set("refine_proposals_seen", Json::Num(proposals as f64))
+            .set("refine_accepted", Json::Num(accepted as f64));
+        out
     }
 
     fn cmd_list(&self) -> Json {
@@ -990,6 +1027,7 @@ de stabilité (‖ΔS‖<λ et non-régression de SI_global)."
 
     let commands = [
         ("describe", "Décrit le système et les commandes."),
+        ("health", "Santé du serveur : sessions, pas cumulés, intégrité de l'audit, activité de raffinement."),
         ("create", "Crée une session. Params: id, seed, optimizer(random|cma), dim, n_tasks, n_hardware, n_software, lambda, epsilon, eta0, forgetting, phi_slope, phi_bias, (+ candidates/explore_scale ou population/generations/sigma0)."),
         ("step", "Un pas de boucle RSI. Params: id."),
         ("run", "Avance de N pas. Params: id, steps."),
@@ -1081,6 +1119,35 @@ mod tests {
         let res = api.handle("run_until", &p).unwrap();
         assert_eq!(res.get("reason").and_then(|v| v.as_str()), Some("target_reached"));
         assert!(res.get("si_end").and_then(|v| v.as_f64()).unwrap() >= si0 + 0.03);
+    }
+
+    #[test]
+    fn health_reports_sessions_and_audit_integrity() {
+        use crate::audit::HashChainLog;
+        let mut api = RsiApi::new();
+        // serveur vide : ok, 0 session, audit intègre par vacuité
+        let h0 = api.handle("health", &Json::obj()).unwrap();
+        assert_eq!(h0.get("sessions").and_then(|v| v.as_f64()), Some(0.0));
+        assert_eq!(h0.get("audit_intact").and_then(|v| v.as_bool()), Some(true));
+
+        // session auditée + quelques pas
+        let mut api2 = RsiApi::new();
+        let agent = RSIAgent::demo(7).with_audit(Box::new(HashChainLog::new()));
+        api2.sessions.insert(
+            "x".into(),
+            Session { agent, history: Vec::new(), config: Json::obj() },
+        );
+        api2.handle("run", &{
+            let mut r = Json::obj();
+            r.set("id", Json::Str("x".into())).set("steps", Json::Num(10.0));
+            r
+        })
+        .unwrap();
+        let h = api2.handle("health", &Json::obj()).unwrap();
+        assert_eq!(h.get("sessions").and_then(|v| v.as_f64()), Some(1.0));
+        assert!(h.get("total_steps").and_then(|v| v.as_f64()).unwrap() >= 10.0);
+        assert_eq!(h.get("audited_sessions").and_then(|v| v.as_f64()), Some(1.0));
+        assert_eq!(h.get("audit_intact").and_then(|v| v.as_bool()), Some(true));
     }
 
     #[test]

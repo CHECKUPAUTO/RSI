@@ -218,6 +218,13 @@ fn tools_list() -> Json {
         tool("rsi_reset", "Réinitialise la session à partir de sa configuration.", props(&[id()]), &[]),
         tool("rsi_list_sessions", "Liste les sessions actives.", Json::obj(), &[]),
         tool(
+            "rsi_health",
+            "Santé du serveur : nombre de sessions, pas cumulés, intégrité de l'audit \
+             hash-chaîné (audit_intact), activité de raffinement.",
+            Json::obj(),
+            &[],
+        ),
+        tool(
             "rsi_refine_new",
             "Crée une session de raffinement piloté par LLM. Le LLM propose des candidats (texte) ; \
              le serveur les évalue en sandbox et n'adopte que les strictement meilleurs et sûrs — \
