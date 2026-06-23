@@ -79,6 +79,7 @@ pub mod substrate;
 pub mod surface;
 pub mod swarm;
 pub mod synthesis;
+pub mod tuning;
 
 pub use agent::{RSIAgent, StepReport};
 pub use api::{ApiResult, RsiApi};

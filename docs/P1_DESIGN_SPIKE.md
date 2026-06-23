@@ -364,5 +364,12 @@ Le LLM est une *source de propositions sous contrainte*, pas un pilote.
   parsing réponse + erreurs API) est **std-only et testée hors-ligne** via un
   transport mock (5 tests). Le branchement d'une pile TLS réelle (p. ex.
   `ureq`/`rustls`) côté hôte reste à faire dans un environnement avec réseau.
-- ⏭️ **Prochaines briques** : transport TLS turnkey pour Claude (dépendance
-  optionnelle, hors environnement hors-ligne) ; domaine « prompts »/« config ».
+- ✅ **2ᵉ domaine — configuration** (`ConfigTuning`, `src/tuning.rs`) :
+  optimisation d'hyperparamètres (objet JSON, `Cand` ≠ `Expr`) contre un
+  objectif lisse à optimum caché, held-out décalé, `safety_check` = validation
+  de bornes (schéma). Démontre la **généralité** de `LlmRefineTask` (texte →
+  **config**). Testé hors-ligne via mock (réglage convergent, rejet de config
+  hors bornes, filtrage des JSON malformés). Utilisable via `ascend_llm`.
+- ⏭️ **Prochaines briques** : exposer la **multi-domaine via MCP** (les outils
+  `rsi_refine_new`/… ne pilotent que la synthèse pour l'instant) ; transport TLS
+  turnkey pour Claude (réseau) ; domaine « prompts ».
