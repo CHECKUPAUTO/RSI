@@ -144,9 +144,13 @@ une variation sous le bruit Monte-Carlo. Évite les faux backtracks.
   échantillon (0 échec observé), pas prouvés (creusot/loom envisagés mais non
   faits — cf. spike P0.4).
 - **Sandbox = portée du domaine.** La garantie « jamais d'exécution » vaut pour
-  les domaines fournis (AST interprété, config validée). Un domaine futur qui
-  exécuterait du code (p. ex. WASM, P2) devra apporter sa propre isolation
-  (fuel, capabilities) — c'est une condition explicite, pas un acquis.
+  les domaines fournis sans exécution (AST interprété, config validée, prompt
+  texte). Le **domaine WASM** (`src/wasm_domain.rs`, feature `wasm`) est le seul
+  qui **exécute** du code candidat : il apporte son isolation explicite via
+  `wasmi` — **zéro import host** (linker vide ⇒ aucun accès réseau/fs/syscall) et
+  **fuel borné** (terminaison garantie). Tout module déclarant un import ou
+  dépassant le fuel est rejeté/trappé. C'est la condition d'un domaine exécutant,
+  désormais satisfaite.
 - **Le déterminisme est bit-exact en séquentiel.** Toute parallélisation future
   de l'évaluation devra préserver une réduction à ordre fixe, sinon
   `same_seed ⇒ same_audit_head` ne tient plus (cf. spike §6).

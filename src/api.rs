@@ -350,6 +350,84 @@ impl RefineDomain for PromptDomain {
     }
 }
 
+/// Domaine concret : synthèse de code WASM exécuté en bac à sable (feature `wasm`).
+#[cfg(feature = "wasm")]
+struct WasmDomain {
+    task: crate::wasm_domain::WasmSynthesis,
+    incumbent: String,
+}
+
+#[cfg(feature = "wasm")]
+impl RefineDomain for WasmDomain {
+    fn domain(&self) -> &'static str {
+        "wasm"
+    }
+    fn incumbent_pretty(&self) -> String {
+        self.incumbent.clone()
+    }
+    fn incumbent_score(&self) -> f64 {
+        self.task.score(&self.incumbent)
+    }
+    fn incumbent_heldout(&self) -> f64 {
+        self.task.score_heldout(&self.incumbent)
+    }
+    fn incumbent_size(&self) -> usize {
+        self.incumbent.len()
+    }
+    fn heldout_cases(&self) -> usize {
+        0
+    }
+    fn evaluate(&self, text: &str) -> EvalOutcome {
+        let p = text.trim().to_string();
+        if p.is_empty() {
+            return EvalOutcome {
+                parseable: false,
+                error: Some("WAT vide".to_string()),
+                ..Default::default()
+            };
+        }
+        let cur = self.task.score(&self.incumbent);
+        let fit = self.task.score(&p);
+        let safe = self.task.safety_check(&p);
+        EvalOutcome {
+            parseable: true,
+            pretty: Some(p.clone()),
+            size: Some(p.len()),
+            score: Some(fit),
+            heldout: Some(self.task.score_heldout(&p)),
+            safe: Some(safe.is_ok()),
+            would_adopt: Some(safe.is_ok() && fit > cur),
+            safety_reason: safe.err().map(|v| v.0),
+            error: None,
+        }
+    }
+    fn propose_one(&mut self, text: &str) -> ProposeStatus {
+        let p = text.trim().to_string();
+        if p.is_empty() {
+            return ProposeStatus::Unparsed("WAT vide".to_string());
+        }
+        if let Err(v) = self.task.safety_check(&p) {
+            return ProposeStatus::Unsafe(v.0);
+        }
+        let fit = self.task.score(&p);
+        if fit > self.task.score(&self.incumbent) {
+            self.incumbent = p.clone();
+            ProposeStatus::Adopted { pretty: p, score: fit }
+        } else {
+            ProposeStatus::Worse { pretty: p, score: fit }
+        }
+    }
+    fn set_incumbent(&mut self, text: &str) -> Result<(), String> {
+        let p = text.trim().to_string();
+        if p.is_empty() {
+            return Err("WAT vide".to_string());
+        }
+        self.task.safety_check(&p).map_err(|v| v.0)?;
+        self.incumbent = p;
+        Ok(())
+    }
+}
+
 /// Gestionnaire de sessions RSI piloté par commandes JSON.
 #[derive(Default)]
 pub struct RsiApi {
@@ -859,7 +937,18 @@ fn build_domain(params: &Json) -> Result<(Box<dyn RefineDomain>, String), String
             let incumbent = task.seed_candidate();
             Ok((Box::new(PromptDomain { task, incumbent }), "prompt".to_string()))
         }
-        other => Err(format!("domaine inconnu : '{other}' (synthesis|tuning|prompt)")),
+        #[cfg(feature = "wasm")]
+        "wasm" => {
+            // cible jouet x²+1 sur des entiers ; le LLM propose du WAT exécuté en
+            // bac à sable (wasmi, fuel, zéro import). Voir src/wasm_domain.rs.
+            let task = crate::wasm_domain::WasmSynthesis::from_target(
+                |x| x * x + 1,
+                [-3_i64, -1, 0, 2, 4, 5],
+            );
+            let incumbent = task.seed_candidate();
+            Ok((Box::new(WasmDomain { task, incumbent }), "wasm".to_string()))
+        }
+        other => Err(format!("domaine inconnu : '{other}' (synthesis|tuning|prompt|wasm)")),
     }
 }
 
@@ -1287,6 +1376,35 @@ mod tests {
         let inc = res.get("incumbent").unwrap();
         assert_eq!(res.get("adopted").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(inc.get("rejected_unsafe").and_then(|v| v.as_f64()), Some(1.0));
+        assert!(inc.get("score").and_then(|v| v.as_f64()).unwrap() > 0.9);
+    }
+
+    #[cfg(feature = "wasm")]
+    #[test]
+    fn refine_wasm_domain_executes_and_rejects_imports_via_mcp() {
+        let mut api = RsiApi::new();
+        let mut c = Json::obj();
+        c.set("id", Json::Str("w".into())).set("domain", Json::Str("wasm".into()));
+        let created = api.handle("refine_new", &c).unwrap();
+        assert_eq!(
+            created.get("incumbent").and_then(|i| i.get("domain")).and_then(|v| v.as_str()),
+            Some("wasm")
+        );
+
+        let good = "(module (func (export \"run\") (param i64) (result i64) \
+            (i64.add (i64.mul (local.get 0) (local.get 0)) (i64.const 1))))";
+        let with_import = "(module (import \"env\" \"f\" (func)) \
+            (func (export \"run\") (param i64) (result i64) (i64.const 0)))";
+        let mut p = Json::obj();
+        p.set("id", Json::Str("w".into())).set(
+            "proposals",
+            Json::Arr(vec![Json::Str(with_import.into()), Json::Str(good.into())]),
+        );
+        let res = api.handle("propose", &p).unwrap();
+        let inc = res.get("incumbent").unwrap();
+        // le module à import est rejeté (sûreté), le module pur x²+1 est adopté
+        assert_eq!(inc.get("rejected_unsafe").and_then(|v| v.as_f64()), Some(1.0));
+        assert_eq!(res.get("adopted").and_then(|v| v.as_bool()), Some(true));
         assert!(inc.get("score").and_then(|v| v.as_f64()).unwrap() > 0.9);
     }
 

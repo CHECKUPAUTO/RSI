@@ -41,6 +41,10 @@ llm-claude = []
 # Transport HTTPS turnkey pour Claude via `ureq` (bloquant, rustls). Fournit
 # UreqTransport prêt à l'emploi. Nécessite le réseau (api.anthropic.com).
 llm-claude-ureq = ["llm-claude", "dep:ureq"]
+# Domaine WASM : exécution RÉELLE de code candidat en bac à sable (wasmi, pur
+# Rust, déterministe, avec fuel + zéro import host). 4e point du spectre
+# texte→config→code. Le LLM propose du WebAssembly textuel (WAT).
+wasm = ["dep:wasmi", "dep:wat"]
 
 [dependencies]
 forge-core = { git = "https://github.com/CHECKUPAUTO/forge", optional = true }
@@ -50,6 +54,8 @@ rand = { version = "0.8", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 scirust-rsi = { git = "https://github.com/CHECKUPAUTO/scirust", optional = true }
 ureq = { version = "2", optional = true }
+wasmi = { version = "0.31", optional = true }
+wat = { version = "1", optional = true }
 
 [[bin]]
 name = "rsi-demo"

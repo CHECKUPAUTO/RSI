@@ -34,7 +34,9 @@ autoritaire dans les deux cas.
 - **`LlmRefineTask`** (`src/llm.rs`) — le *domaine* : `describe` (prompt),
   `parse_proposals`, `score_heldout` (anti-Goodhart), `safety_check`.
   Domaines fournis : `SymbolicSynthesis` (`src/synthesis.rs`), `ConfigTuning`
-  (`src/tuning.rs`).
+  (`src/tuning.rs`), `PromptOpt` (`src/prompt.rs`), et `WasmSynthesis`
+  (`src/wasm_domain.rs`, feature `wasm` — **exécution réelle** de code candidat
+  en bac à sable `wasmi` : fuel + zéro import host).
 - **`LlmGuard`** — bornes + **budget** (`max_llm_calls`, `max_wall_clock`) +
   garde-fou **anti-overfitting** (`max_overfit_gap`).
 - **`ascend_llm`** — le pilote élitiste (chemin autonome).

@@ -385,9 +385,16 @@ Le LLM est une *source de propositions sous contrainte*, pas un pilote.
   prompt (texte), objectif synthétique par cues (raisonnement/exemple/format),
   held-out décalé, `safety_check` rejetant longueur excessive **et marqueurs
   d'injection**. Exposé via MCP (`domain: "prompt"`). Vérifié end-to-end
-  (injection rejetée, bon prompt adopté). Les 3 points du spectre texte → config
-  → code sont couverts (code/WASM = P2).
-- ✅ **Docs** : `docs/LLM_INTEGRATION.md` (guide d'intégration) et
-  `docs/SAFETY.md` (garde-fous, garanties vs limites).
-- ⏭️ **Reste** : transport TLS turnkey pour Claude (réseau) ; sandbox code/WASM
-  (P2) ; vérification formelle (P0.4).
+  (injection rejetée, bon prompt adopté).
+- ✅ **4ᵉ domaine — WASM (P2, exécution réelle)** (`WasmSynthesis`,
+  `src/wasm_domain.rs`, feature `wasm`) : le LLM propose du WebAssembly textuel,
+  **exécuté en bac à sable `wasmi`** (interpréteur pur-Rust, déterministe) avec
+  **fuel** (terminaison) et **zéro import host** (linker vide ⇒ capability-free).
+  `safety_check` rejette WAT invalide / imports / export `run` manquant ;
+  exposé via MCP (`domain: "wasm"`). **Le spectre texte → config → code est
+  désormais entièrement couvert.** 137 tests avec `--features wasm`.
+- ✅ **Backend Claude TLS turnkey** (`UreqTransport`, feature `llm-claude-ureq`).
+- ✅ **Vrai moteur scirust** (git-dep amont validé : 131 tests `--features scirust`).
+- ✅ **Docs** : `docs/LLM_INTEGRATION.md`, `docs/SAFETY.md`, `docs/WEB_ENV.md`.
+- ⏭️ **Reste** : observabilité (`tracing`/Prometheus) ; SIMD `wide` (derrière
+  feature, relâche la repro bit-exacte) ; vérification formelle (P0.4).
