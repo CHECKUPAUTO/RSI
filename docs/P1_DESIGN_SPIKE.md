@@ -226,10 +226,13 @@ P1.2 et concentre tout le risque d'exécution).
 
 - **`std::simd` est nightly** : pour P2, utiliser `wide` ou `std::arch`, pas
   `portable_simd`. (Corrige une affirmation erronée de la roadmap.)
-- **Déterminisme vs parallélisme** : toute parallélisation de l'évaluation
-  (P2.1) doit utiliser une **réduction à ordre fixe** pour préserver
-  `same_seed ⇒ same_audit_head`, ou bien on relâche explicitement la garantie
-  bit-exacte. À trancher en P2, pas avant.
+- **Déterminisme vs parallélisme** : ✅ **tranché — déterminisme préservé.**
+  `MetaOptimizer` évalue désormais les candidats en parallèle
+  (`std::thread::scope`, sans dépendance) mais : génération RNG séquentielle,
+  évaluation pure, **argmax à ordre d'indice fixe**. Résultat **bit-exact**
+  identique au séquentiel (testé : `parallel_eval_is_bit_exact_vs_sequential`),
+  donc `same_seed ⇒ same_audit_head` tient. `CmaEsMeta` (éval de population dans
+  `cma.rs`) reste séquentiel pour l'instant — parallélisation de suivi.
 - **Invariant `‖ΔS‖≤λ`** : garanti seulement dans le domaine `[0,1]ⁿ`
   (non-expansivité de la projection). Le moteur y reste toujours ; à documenter
   comme précondition dans `docs/SAFETY.md`.

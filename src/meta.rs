@@ -218,6 +218,43 @@ impl MetaOptimizer {
     }
 }
 
+/// Seuil de candidats au-delà duquel l'évaluation est parallélisée.
+const PAR_MIN: usize = 8;
+
+/// Évalue `projected_si` pour chaque stratégie. Au-delà de [`PAR_MIN`] éléments
+/// (et si plusieurs cœurs), l'évaluation est **parallélisée** via
+/// `std::thread::scope` (aucune dépendance). Chaque valeur étant calculée
+/// indépendamment par une fonction **pure**, le résultat est **bit-exact**
+/// identique à l'évaluation séquentielle — l'argmax à ordre d'indice fixe chez
+/// l'appelant préserve donc `même graine ⇒ même trajectoire ⇒ même audit`.
+fn eval_projected_si(
+    items: &[MetaStrategy],
+    state: &CognitiveState,
+    substrate: &Substrate,
+    surface: &IntelligenceSurface,
+) -> Vec<f64> {
+    let n = items.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let threads = std::thread::available_parallelism().map(|t| t.get()).unwrap_or(1);
+    if threads <= 1 || n < PAR_MIN {
+        return items.iter().map(|s| s.projected_si(state, substrate, surface)).collect();
+    }
+    let chunk = n.div_ceil(threads);
+    let mut out = vec![0.0_f64; n];
+    std::thread::scope(|scope| {
+        for (src, dst) in items.chunks(chunk).zip(out.chunks_mut(chunk)) {
+            scope.spawn(move || {
+                for (i, s) in src.iter().enumerate() {
+                    dst[i] = s.projected_si(state, substrate, surface);
+                }
+            });
+        }
+    });
+    out
+}
+
 impl MetaSearch for MetaOptimizer {
     fn revise(
         &mut self,
@@ -229,20 +266,19 @@ impl MetaSearch for MetaOptimizer {
         let mut best = current.clone();
         let mut best_si = current.projected_si(state, substrate, surface);
 
-        // graines mémoire (§A) : évalue d'abord les stratégies passées rappelées
-        for seed in self.seeds.drain(..).collect::<Vec<_>>() {
-            let si = seed.projected_si(state, substrate, surface);
-            if si > best_si {
-                best = seed;
-                best_si = si;
-            }
+        // Ordre d'évaluation IDENTIQUE à la version séquentielle : graines mémoire
+        // (§A) puis candidats générés. La génération (RNG) reste séquentielle ;
+        // seule l'ÉVALUATION est parallélisée. L'argmax ci-dessous, à ordre fixe
+        // et strictement croissant, reproduit exactement la sélection séquentielle.
+        let mut items: Vec<MetaStrategy> = self.seeds.drain(..).collect();
+        for _ in 0..self.candidates {
+            items.push(current.perturb(&mut self.rng, self.explore_scale));
         }
 
-        for _ in 0..self.candidates {
-            let cand = current.perturb(&mut self.rng, self.explore_scale);
-            let si = cand.projected_si(state, substrate, surface);
+        let sis = eval_projected_si(&items, state, substrate, surface);
+        for (item, si) in items.into_iter().zip(sis) {
             if si > best_si {
-                best = cand;
+                best = item;
                 best_si = si;
             }
         }
@@ -400,5 +436,42 @@ mod tests {
             let d2 = MetaStrategy::decode(&d.encode(), 1);
             assert!((d.gain - d2.gain).abs() < 1e-9, "roundtrip {} vs {}", d.gain, d2.gain);
         }
+    }
+
+    #[test]
+    fn parallel_eval_is_bit_exact_vs_sequential() {
+        // N > PAR_MIN pour forcer le chemin parallèle ; on compare bit à bit.
+        let mut rng = Rng::new(1);
+        let surf = IntelligenceSurface::sample(128, &mut rng);
+        let state = CognitiveState::random(Dims::uniform(6), &mut rng, 0.3);
+        let sub = Substrate::default_with(4, 4, &mut rng);
+        let base = MetaStrategy::neutral(sub.o.len());
+        let items: Vec<MetaStrategy> =
+            (0..32).map(|_| base.perturb(&mut rng, 0.2)).collect();
+
+        let par = eval_projected_si(&items, &state, &sub, &surf);
+        let seq: Vec<f64> =
+            items.iter().map(|s| s.projected_si(&state, &sub, &surf)).collect();
+
+        assert_eq!(par.len(), seq.len());
+        for (a, b) in par.iter().zip(&seq) {
+            // bit-exact (gère aussi l'égalité des NaN éventuels)
+            assert_eq!(a.to_bits(), b.to_bits(), "parallèle {a} != séquentiel {b}");
+        }
+    }
+
+    #[test]
+    fn meta_optimizer_revise_is_deterministic() {
+        let run = || {
+            let mut rng = Rng::new(9);
+            let surf = IntelligenceSurface::sample(96, &mut rng);
+            let state = CognitiveState::random(Dims::uniform(6), &mut rng, 0.25);
+            let sub = Substrate::default_with(4, 4, &mut rng);
+            let cur = MetaStrategy::neutral(sub.o.len());
+            let mut opt = MetaOptimizer::new(40, 0.15, 123);
+            let (_best, si) = opt.revise(&cur, &state, &sub, &surf);
+            si
+        };
+        assert_eq!(run().to_bits(), run().to_bits());
     }
 }
