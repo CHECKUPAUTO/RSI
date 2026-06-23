@@ -36,55 +36,27 @@ Niveaux : **None** (aucun) · **Trusted** (liste blanche) · **Full** (tout) ·
 > Variables d'env : format `.env`, `KEY=value` sans guillemets. **Pas de coffre
 > à secrets** — visibles par les éditeurs de l'environnement.
 
-## Plan prêt-à-appliquer : transport TLS pour Claude
+## Transport TLS pour Claude — IMPLÉMENTÉ ✅
 
-La logique Claude (requête Messages API + parsing) est déjà livrée et **testée
-hors-ligne** (`src/llm.rs`, feature `llm-claude`, transport injecté via
-`ClaudeTransport`). Une fois en `Trusted`, il ne reste qu'à brancher une pile
-HTTPS réelle. Approche recommandée : une feature `llm-claude-ureq` tirant `ureq`
-(client bloquant, sans tokio).
+Feature **`llm-claude-ureq`** : `UreqTransport` (au-dessus de `ureq`/rustls)
+fournit un `ClaudeTransport` turnkey. Compilé et type-vérifié en environnement
+réseau.
 
-**À appliquer puis vérifier en environnement réseau** (non committé tant que
-non compilable hors-ligne) :
+```rust
+# #[cfg(feature = "llm-claude-ureq")] {
+use rsi::llm::ClaudeClient;
+let client = ClaudeClient::with_ureq(
+    std::env::var("ANTHROPIC_API_KEY").unwrap(),
+    "claude-sonnet-4-6",
+);
+// client implémente LlmClient → utilisable dans ascend_llm.
+# }
+```
 
-1. `Cargo.toml` :
-   ```toml
-   [features]
-   llm-claude-ureq = ["llm-claude", "dep:ureq"]
-
-   [dependencies]
-   ureq = { version = "2", optional = true }
-   ```
-
-2. `src/llm.rs` (gated `#[cfg(feature = "llm-claude-ureq")]`) :
-   ```rust
-   /// Transport HTTPS réel pour Claude via `ureq` (bloquant, rustls).
-   pub struct UreqTransport;
-
-   impl ClaudeTransport for UreqTransport {
-       fn post_json(&self, url: &str, headers: &[(String, String)], body: &str)
-           -> Result<String, String> {
-           let mut req = ureq::post(url);
-           for (k, v) in headers {
-               req = req.set(k, v);
-           }
-           match req.send_string(body) {
-               Ok(resp) => resp.into_string().map_err(|e| e.to_string()),
-               // 4xx/5xx : ureq renvoie Err(Status) avec un corps JSON d'erreur
-               // Anthropic — on le transmet à parse_claude_response via Ok.
-               Err(ureq::Error::Status(_, resp)) => {
-                   resp.into_string().map_err(|e| e.to_string())
-               }
-               Err(e) => Err(e.to_string()),
-           }
-       }
-   }
-   ```
-
-3. Vérifier : `cargo build --features llm-claude-ureq` puis un test
-   d'intégration réel (clé API via `ANTHROPIC_API_KEY`), p. ex. brancher
-   `ClaudeClient::new(UreqTransport, key, "claude-sonnet-4-6")` dans
-   `ascend_llm` sur le domaine `prompt`.
+Build : `cargo build --features llm-claude-ureq`. Pour un appel **réel**, définir
+`ANTHROPIC_API_KEY` dans les variables d'environnement (cf. `.env.example`) —
+non requis pour compiler/tester la logique (couverte hors-ligne par un transport
+mock).
 
 ## Suite (ordre de valeur, une fois en Trusted)
 1. Transport TLS Claude (ci-dessus).

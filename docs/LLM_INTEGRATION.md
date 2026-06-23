@@ -83,18 +83,30 @@ let client = OllamaClient::new("llama3.2");           // 127.0.0.1:11434 par dé
 
 ### Backend Claude (transport injecté)
 
-`std` n'offrant pas de TLS, l'hôte fournit le transport HTTPS :
+`std` n'offrant pas de TLS, le transport HTTPS est isolé derrière le trait
+`ClaudeTransport`. **Turnkey** (feature `llm-claude-ureq`, au-dessus de
+`ureq`/rustls) :
+
+```rust
+# #[cfg(feature = "llm-claude-ureq")] {
+use rsi::llm::ClaudeClient;
+let client = ClaudeClient::with_ureq(
+    std::env::var("ANTHROPIC_API_KEY").unwrap(),
+    "claude-sonnet-4-6",
+);
+# }
+```
+
+Ou **transport maison** (feature `llm-claude`, sans dépendance) :
 
 ```rust
 # #[cfg(feature = "llm-claude")] {
 use rsi::llm::{ClaudeClient, ClaudeTransport};
-
-struct MyTls; // au-dessus de votre pile (ureq/rustls, etc.)
+struct MyTls; // au-dessus de votre pile HTTPS
 impl ClaudeTransport for MyTls {
     fn post_json(&self, url: &str, headers: &[(String, String)], body: &str)
         -> Result<String, String> { /* POST HTTPS → corps réponse */ todo!() }
 }
-
 let client = ClaudeClient::new(MyTls, std::env::var("ANTHROPIC_API_KEY").unwrap(),
                                "claude-sonnet-4-6");
 # }

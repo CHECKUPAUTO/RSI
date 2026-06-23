@@ -39,6 +39,9 @@ llm-ollama = []
 # parsing) est sans dépendance ; le transport HTTPS/TLS est injecté par l'hôte
 # (trait ClaudeTransport), car std n'offre pas de TLS.
 llm-claude = []
+# Transport HTTPS turnkey pour Claude via `ureq` (bloquant, rustls). Fournit
+# UreqTransport prêt à l'emploi. Nécessite le réseau (api.anthropic.com).
+llm-claude-ureq = ["llm-claude", "dep:ureq"]
 
 [dependencies]
 forge-core = { git = "https://github.com/CHECKUPAUTO/forge", optional = true }
@@ -47,6 +50,7 @@ ccos = { git = "https://github.com/CHECKUPAUTO/CCOS", optional = true }
 rand = { version = "0.8", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 scirust-rsi = { path = "vendor/scirust-rsi", optional = true }
+ureq = { version = "2", optional = true }
 
 [[bin]]
 name = "rsi-demo"

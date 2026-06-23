@@ -563,6 +563,51 @@ impl<T: ClaudeTransport> LlmClient for ClaudeClient<T> {
     }
 }
 
+// ============== Transport HTTPS turnkey pour Claude (feature `llm-claude-ureq`) //
+//
+// Implémentation prête à l'emploi de `ClaudeTransport` au-dessus de `ureq`
+// (client HTTP bloquant + rustls), pour qui ne veut pas fournir son propre
+// transport. Le cœur reste sans dépendance ; `ureq` n'est tiré que par cette
+// feature optionnelle.
+
+/// Transport HTTPS réel pour Claude via [`ureq`] (bloquant, TLS rustls).
+#[cfg(feature = "llm-claude-ureq")]
+#[derive(Clone, Copy, Default)]
+pub struct UreqTransport;
+
+#[cfg(feature = "llm-claude-ureq")]
+impl ClaudeTransport for UreqTransport {
+    fn post_json(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+        body: &str,
+    ) -> Result<String, String> {
+        let mut req = ureq::post(url);
+        for (k, v) in headers {
+            req = req.set(k, v);
+        }
+        match req.send_string(body) {
+            Ok(resp) => resp.into_string().map_err(|e| e.to_string()),
+            // 4xx/5xx : ureq renvoie Err(Status) avec le corps JSON d'erreur
+            // Anthropic — on le transmet tel quel pour que parse_claude_response
+            // en extraie le message d'erreur structuré.
+            Err(ureq::Error::Status(_, resp)) => resp.into_string().map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+/// Constructeur pratique : `ClaudeClient` adossé au transport `ureq`.
+#[cfg(feature = "llm-claude-ureq")]
+impl ClaudeClient<UreqTransport> {
+    /// Client Claude turnkey (transport `ureq`/rustls). `model` explicite
+    /// (p. ex. `claude-sonnet-4-6`). La clé API n'est lue qu'ici, jamais loguée.
+    pub fn with_ureq(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        ClaudeClient::new(UreqTransport, api_key, model)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
