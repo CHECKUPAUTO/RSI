@@ -22,16 +22,30 @@ use rsi::json::Json;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
+/// Plafond de taille d'une ligne JSON-RPC entrante (16 MB). Un client hostile
+/// pourrait envoyer une ligne arbitrairement longue pour provoquer une OOM ;
+/// on rejette au-delà de ce seuil (erreur -32600 « request too large »).
+const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
+
 fn main() {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let mut api = RsiApi::new();
 
-    for line in stdin.lock().lines() {
+    // Lecture byte-à-byte bornée : on accumule la ligne jusqu'à newline ou
+    // MAX_LINE_BYTES, puis on la passe au parseur. Rejette les surcharges.
+    let mut reader = stdin.lock();
+    for line in read_bounded_lines(&mut reader, MAX_LINE_BYTES) {
         let line = match line {
             Ok(l) => l,
-            Err(_) => break,
+            Err(LineError::TooLarge) => {
+                let resp = error_response(&Json::Null, -32600, "request too large (>16 MB)");
+                let _ = writeln!(out, "{}", resp.to_string());
+                let _ = out.flush();
+                continue;
+            }
+            Err(LineError::Io) => break,
         };
         if line.trim().is_empty() {
             continue;
@@ -47,6 +61,49 @@ fn main() {
             let _ = out.flush();
         }
     }
+}
+
+enum LineError {
+    TooLarge,
+    Io,
+}
+
+/// Lit des lignes avec un plafond strict sur la taille de chaque ligne.
+fn read_bounded_lines<R: BufRead>(reader: &mut R, max_bytes: usize) -> impl Iterator<Item = Result<String, LineError>> + '_ {
+    let mut buf = Vec::with_capacity(4096);
+    std::iter::from_fn(move || {
+        buf.clear();
+        loop {
+            let mut byte = [0u8; 1];
+            match reader.read(&mut byte) {
+                Ok(0) => {
+                    if buf.is_empty() {
+                        return None;
+                    }
+                    return Some(Ok(String::from_utf8_lossy(&buf).into_owned()));
+                }
+                Ok(_) => {
+                    if byte[0] == b'\n' {
+                        return Some(Ok(String::from_utf8_lossy(&buf).into_owned()));
+                    }
+                    buf.push(byte[0]);
+                    if buf.len() > max_bytes {
+                        // drain jusqu'à la prochaine newline pour resynchroniser
+                        loop {
+                            match reader.read(&mut byte) {
+                                Ok(0) => return None,
+                                Ok(_) if byte[0] == b'\n' => break,
+                                Ok(_) => continue,
+                                Err(_) => return None,
+                            }
+                        }
+                        return Some(Err(LineError::TooLarge));
+                    }
+                }
+                Err(_) => return Some(Err(LineError::Io)),
+            }
+        }
+    })
 }
 
 /// Dispatche une requête JSON-RPC. Renvoie `None` pour les notifications.

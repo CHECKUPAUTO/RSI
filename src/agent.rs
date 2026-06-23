@@ -50,6 +50,9 @@ pub struct StepReport {
     /// réponse de sûreté appliquée à ce pas (§7 garde-fou actif) :
     /// "none" | "damp_gain" | "realign_V" | "trust_floor".
     pub mitigation: &'static str,
+    /// `true` si le pas combiné (meta + appr) régressait SI au-delà de ε et a
+    /// été reverté vers l'état pré-pas (garde-fou §4 étendu — bug B corrigé).
+    pub reverted: bool,
 }
 
 /// Agent cognitif auto-améliorant.
@@ -380,7 +383,23 @@ impl RSIAgent {
 
         // 3) ΔS_appr : apprentissage via la dynamique continue contrainte (§4)
         let dynamics = Dynamics::new(&self.surface, self.dynamics_cfg);
-        let (next_state, appr) = dynamics.constrained_step(&state_after_meta, &substrate, 1.0);
+        let (mut next_state, appr) = dynamics.constrained_step(&state_after_meta, &substrate, 1.0);
+
+        // §4 — garde-fou de non-régression sur le pas **combiné** (meta + appr).
+        // Le `constrained_step` ci-dessus ne garantit que
+        // `SI(state_after_meta + ΔS_appr) ≥ SI(state_after_meta) − ε` : il ne
+        // voit pas une éventuelle régression causée par ℳ (meta_delta) ou par
+        // la réponse de sûreté (anti-wireheading qui baisse P_eff). On vérifie
+        // donc ici l'invariant global `SI(t+1) ≥ SI(t) − ε` par rapport au
+        // baseline pré-pas (`si_before`). En cas de violation, on revert au
+        // état/substrat d'origine — le pas est abandonné (écurie de sûreté).
+        let eps = self.dynamics_cfg.epsilon;
+        let si_combined = self.surface.si_global(&next_state, &substrate);
+        let reverted = si_combined < si_before - eps;
+        if reverted {
+            next_state = self.state.clone();
+            substrate = self.substrate.clone();
+        }
 
         // 4) commit de l'état
         self.state = next_state;
@@ -449,6 +468,7 @@ impl RSIAgent {
             most_critical: risk.most_critical,
             si_safe,
             mitigation,
+            reverted,
         }
     }
 
@@ -481,8 +501,22 @@ mod tests {
         let eps = agent.dynamics_cfg.epsilon;
         let reports = agent.run(60);
         for r in &reports {
-            // garde-fou de non-régression appliqué à l'étape d'apprentissage
+            // garde-fou de non-régression sur l'étape d'apprentissage
             assert!(r.appr.si_after >= r.appr.si_before - eps - 1e-9);
+            // garde-fou de non-régression sur le pas combiné (meta + appr) — bug B
+            assert!(r.delta_si >= -eps - 1e-9, "delta_si={} < -eps", r.delta_si);
+        }
+    }
+
+    #[test]
+    fn combined_non_regression_guarantees_delta_si() {
+        // Sur de nombreuses graines, l'invariant global doit tenir.
+        for seed in [1u64, 7, 42, 99, 2026, 31337] {
+            let mut agent = RSIAgent::demo(seed);
+            let eps = agent.dynamics_cfg.epsilon;
+            for r in agent.run(50) {
+                assert!(r.delta_si >= -eps - 1e-9, "seed={seed} delta_si={}", r.delta_si);
+            }
         }
     }
 

@@ -43,19 +43,45 @@ where
                 let build = &build;
                 scope.spawn(move || {
                     let seed = base_seed + i as u64;
-                    let mut agent = build(seed);
-                    let reports = agent.run(steps);
-                    let last = reports.last().unwrap();
-                    SwarmMember { seed, si_global: last.si_global, si_safe: last.si_safe }
+                    // Isolation des panics : si `build` ou `run` panique
+                    // (dimensions incohérentes, état dégénéré, …), on marque le
+                    // membre comme invalide (`si_safe = −∞`) au lieu de
+                    // propager le panic et d'effondrer tout l'essaim. Le membre
+                    // est ensuite exclu de la sélection par `partial_cmp`.
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let mut agent = build(seed);
+                        let reports = agent.run(steps);
+                        let last = reports.last().unwrap();
+                        SwarmMember {
+                            seed,
+                            si_global: last.si_global,
+                            si_safe: last.si_safe,
+                        }
+                    })) {
+                        Ok(m) => m,
+                        Err(_) => SwarmMember {
+                            seed,
+                            si_global: 0.0,
+                            si_safe: f64::NEG_INFINITY,
+                        },
+                    }
                 })
             })
             .collect();
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or(SwarmMember {
+                seed: 0,
+                si_global: 0.0,
+                si_safe: f64::NEG_INFINITY,
+            }))
+            .collect()
     });
 
     let best_index = members
         .iter()
         .enumerate()
+        .filter(|(_, m)| m.si_safe.is_finite())
         .max_by(|(_, a), (_, b)| a.si_safe.partial_cmp(&b.si_safe).unwrap())
         .map(|(i, _)| i)
         .unwrap_or(0);

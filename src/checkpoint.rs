@@ -136,8 +136,14 @@ impl Checkpoint {
             gain: stj.get("gain").and_then(|v| v.as_f64()).unwrap_or(0.05),
         };
 
-        // validation de cohérence dimensionnelle minimale
-        let _ = Dims {
+        // validation de cohérence dimensionnelle (bug H corrigé).
+        // On construit et **valide** les `Dims` : toutes les composantes de
+        // l'état doivent avoir une longueur non nulle et cohérente avec le
+        // substrat (h ∈ ℝ^hw, o ∈ ℝ^sw ; A ∈ ℝ^{hw×hw}, B ∈ ℝ^{sw×sw},
+        // C ∈ ℝ^{hw×sw}). Un checkpoint aux dimensions incohérentes avec la
+        // surface courante provoquerait un panic ultérieur dans `si_global` —
+        // on rejette donc tôt avec une erreur explicite.
+        let dims = Dims {
             d: state.d.len(),
             m: state.m.len(),
             r: state.r.len(),
@@ -145,6 +151,36 @@ impl Checkpoint {
             c: state.c.len(),
             v: state.v.len(),
         };
+        if dims.d == 0 || dims.m == 0 || dims.r == 0 || dims.a == 0 || dims.c == 0 || dims.v == 0 {
+            return Err("checkpoint: dimension nulle dans l'état cognitif".into());
+        }
+        // Cohérence substrat ↔ état : on suppose ici le schéma standard du
+        // `Substrate::default_with(hw, sw, …)` où hw/sw sont indépendants des
+        // dims cognitives. On valide juste que les matrices ont des dimensions
+        // mutuellement cohérentes (A: h×h, B: o×o, C: h×o).
+        let h_len = substrate.h.len();
+        let o_len = substrate.o.len();
+        if h_len == 0 || o_len == 0 {
+            return Err("checkpoint: substrat vide (h ou o nul)".into());
+        }
+        if substrate.a.rows != h_len || substrate.a.cols != h_len {
+            return Err(format!(
+                "checkpoint: matrice A {}×{} incohérente avec h={}",
+                substrate.a.rows, substrate.a.cols, h_len
+            ));
+        }
+        if substrate.b.rows != o_len || substrate.b.cols != o_len {
+            return Err(format!(
+                "checkpoint: matrice B {}×{} incohérente avec o={}",
+                substrate.b.rows, substrate.b.cols, o_len
+            ));
+        }
+        if substrate.c.rows != h_len || substrate.c.cols != o_len {
+            return Err(format!(
+                "checkpoint: matrice C {}×{} incohérente avec h={}, o={}",
+                substrate.c.rows, substrate.c.cols, h_len, o_len
+            ));
+        }
         Ok(Checkpoint { t, state, substrate, strategy })
     }
 
@@ -171,11 +207,43 @@ impl RSIAgent {
 
     /// Restaure l'état macro depuis un checkpoint (surface/mémoire/audit
     /// conservés). Utilisé pour la reprise et le rollback (L4).
+    ///
+    /// Infallible : ne fait que cloner. La validation dimensionnelle est faite
+    /// à la désérialisation (`from_json`) ; en mode debug, on asserte
+    /// néanmoins que les dimensions du substrat sont cohérentes avec la
+    /// surface courante (panique en debug seulement si incohérent).
     pub fn restore(&mut self, cp: &Checkpoint) {
+        debug_assert!(
+            cp.substrate.h.len() == self.substrate.h.len()
+                && cp.substrate.o.len() == self.substrate.o.len(),
+            "checkpoint: substrat incohérent avec l'agent hôte (h/o) — restore ignoré en release"
+        );
         self.state = cp.state.clone();
         self.substrate = cp.substrate.clone();
         self.strategy = cp.strategy.clone();
         self.t = cp.t;
+    }
+
+    /// Variante vérifiée de [`restore`](Self::restore) : retourne une erreur
+    /// explicite si le checkpoint est dimensionnellement incohérent avec
+    /// l'agent hôte (surface/substrat), au lieu d'un panic en debug.
+    pub fn restore_checked(&mut self, cp: &Checkpoint) -> Result<(), String> {
+        if cp.substrate.h.len() != self.substrate.h.len()
+            || cp.substrate.o.len() != self.substrate.o.len()
+        {
+            return Err(format!(
+                "checkpoint incohérent : h {}/{} o {}/{}",
+                cp.substrate.h.len(),
+                self.substrate.h.len(),
+                cp.substrate.o.len(),
+                self.substrate.o.len()
+            ));
+        }
+        self.state = cp.state.clone();
+        self.substrate = cp.substrate.clone();
+        self.strategy = cp.strategy.clone();
+        self.t = cp.t;
+        Ok(())
     }
 }
 
