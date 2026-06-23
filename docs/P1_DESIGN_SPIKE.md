@@ -231,8 +231,11 @@ P1.2 et concentre tout le risque d'exécution).
   (`std::thread::scope`, sans dépendance) mais : génération RNG séquentielle,
   évaluation pure, **argmax à ordre d'indice fixe**. Résultat **bit-exact**
   identique au séquentiel (testé : `parallel_eval_is_bit_exact_vs_sequential`),
-  donc `same_seed ⇒ same_audit_head` tient. `CmaEsMeta` (éval de population dans
-  `cma.rs`) reste séquentiel pour l'instant — parallélisation de suivi.
+  donc `same_seed ⇒ same_audit_head` tient. **`CmaEsMeta` aussi** : `cma.rs`
+  pré-échantillonne la population (RNG séquentiel) puis évalue les fitness en
+  parallèle par index (`eval_population`), mise à jour CMA bit-exacte
+  (`optimize_is_deterministic`). Les deux optimiseurs sont donc parallélisés
+  sans rien céder sur le déterminisme.
 - **Invariant `‖ΔS‖≤λ`** : garanti seulement dans le domaine `[0,1]ⁿ`
   (non-expansivité de la projection). Le moteur y reste toujours ; à documenter
   comme précondition dans `docs/SAFETY.md`.

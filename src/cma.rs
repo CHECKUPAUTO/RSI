@@ -95,7 +95,7 @@ impl SepCmaEs {
         mean0: &[f64],
         sigma0: f64,
         generations: usize,
-        f: impl Fn(&[f64]) -> f64,
+        f: impl Fn(&[f64]) -> f64 + Sync,
     ) -> (Vec<f64>, f64) {
         let n = self.n;
         assert_eq!(mean0.len(), n, "dimension de mean0 incompatible");
@@ -110,20 +110,30 @@ impl SepCmaEs {
         let mut best_f = f(&mean);
 
         for gen in 0..generations {
-            // --- échantillonnage de la population ----------------------- //
-            // (fitness, z, ) — on garde z pour la mise à jour
-            let mut pop: Vec<(f64, Vec<f64>)> = Vec::with_capacity(self.lambda);
+            // --- échantillonnage de la population (RNG SÉQUENTIEL) ------- //
+            // On échantillonne d'abord toute la population (ordre RNG préservé),
+            // puis on évalue les fitness EN PARALLÈLE (f pure). La mise à jour du
+            // best et la construction de `pop` se font ensuite à ORDRE D'INDEX
+            // fixe : résultat bit-exact identique au séquentiel ⇒ déterminisme.
+            let mut zs: Vec<Vec<f64>> = Vec::with_capacity(self.lambda);
+            let mut xs: Vec<Vec<f64>> = Vec::with_capacity(self.lambda);
             for _ in 0..self.lambda {
                 let z: Vec<f64> = (0..n).map(|_| self.rng.normal(0.0, 1.0)).collect();
                 let x: Vec<f64> = (0..n)
                     .map(|j| mean[j] + sigma * cov[j].sqrt() * z[j])
                     .collect();
-                let fit = f(&x);
+                zs.push(z);
+                xs.push(x);
+            }
+            let fits = eval_population(&xs, &f);
+
+            let mut pop: Vec<(f64, Vec<f64>)> = Vec::with_capacity(self.lambda);
+            for (i, fit) in fits.into_iter().enumerate() {
                 if fit > best_f {
                     best_f = fit;
-                    best_x = x;
+                    best_x = xs[i].clone();
                 }
-                pop.push((fit, z));
+                pop.push((fit, std::mem::take(&mut zs[i])));
             }
             // tri décroissant : meilleurs en tête (on maximise)
             pop.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -201,9 +211,48 @@ impl SepCmaEs {
     }
 }
 
+/// Évalue une population en parallèle au-delà d'un seuil (`std::thread::scope`,
+/// sans dépendance). Résultat **indexé** identique au séquentiel (`f` pure) — la
+/// mise à jour CMA en aval reste donc bit-exacte et déterministe.
+fn eval_population<F: Fn(&[f64]) -> f64 + Sync>(xs: &[Vec<f64>], f: &F) -> Vec<f64> {
+    const PAR_MIN: usize = 8;
+    let n = xs.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let threads = std::thread::available_parallelism().map(|t| t.get()).unwrap_or(1);
+    if threads <= 1 || n < PAR_MIN {
+        return xs.iter().map(|x| f(x)).collect();
+    }
+    let chunk = n.div_ceil(threads);
+    let mut out = vec![0.0_f64; n];
+    std::thread::scope(|scope| {
+        for (src, dst) in xs.chunks(chunk).zip(out.chunks_mut(chunk)) {
+            scope.spawn(move || {
+                for (i, x) in src.iter().enumerate() {
+                    dst[i] = f(x);
+                }
+            });
+        }
+    });
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optimize_is_deterministic() {
+        // même graine ⇒ même résultat bit-exact (l'éval parallèle préserve l'ordre)
+        let run = || {
+            let mut cma = SepCmaEs::new(6, 0, 2024);
+            let f = |x: &[f64]| -> f64 { -x.iter().map(|a| a * a).sum::<f64>() };
+            let (_x, best_f) = cma.optimize(&[1.0; 6], 0.8, 60, f);
+            best_f
+        };
+        assert_eq!(run().to_bits(), run().to_bits());
+    }
 
     #[test]
     fn maximizes_negative_sphere() {
