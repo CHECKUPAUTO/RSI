@@ -60,6 +60,7 @@ pub mod dynamics;
 pub mod json;
 pub mod knowledge;
 pub mod linalg;
+pub mod llm;
 pub mod measured_substrate;
 pub mod memory;
 pub mod meta;

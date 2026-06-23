@@ -259,7 +259,7 @@ P1.2 et concentre tout le risque d'exécution).
 | 3 | WASM en P1 ou P2 ? | ✅ **P2** — P1 = Prompts + Configs (zéro exécution). Le sandbox WASM et le domaine « code » arrivent en P2. |
 | 5 | Licence | ✅ **Double licence** — appliquée : `Cargo.toml` déclare désormais `PolyForm-Noncommercial-1.0.0 OR LicenseRef-Commercial` (crate principal + vendor), cohérent avec `LICENSING.md` / README. |
 | 1 | Fournisseur / modèle LLM | ✅ **Ollama (local) par défaut, Claude sélectionnable** — voir §8.1. |
-| 4 | Politique held-out | ⏳ **à confirmer** → défaut proposé ci-dessous. |
+| 4 | Politique held-out | ✅ **Défaut adopté** (70/30 gelé, modifiable) — voir §8.2. |
 
 ### 8.1 Décision — fournisseur / modèle (question 1)
 
@@ -324,3 +324,19 @@ coût/tokens redevient pertinent. Les deux régimes passent par le même
 **Le fil rouge** : étendre les garde-fous existants (élitisme, criticité, audit)
 au coût et à l'intégrité d'éval, plutôt que d'ajouter une boucle LLM à côté.
 Le LLM est une *source de propositions sous contrainte*, pas un pilote.
+
+---
+
+## 10. Avancement
+
+- ✅ **P1.1 — squelette mécanique** (`src/llm.rs`, std-only, testé hors-ligne) :
+  - `LlmClient` (backend interchangeable) + `MockLlmClient` déterministe ;
+  - `LlmRefineTask` (describe / parse_proposals / score_heldout / safety_check) ;
+  - `LlmGuard` (bornes + budget appels/temps + garde-fou overfitting) ;
+  - `ascend_llm` (élitisme strict : adoption ⟺ *sûr* ET *strictement meilleur*),
+    avec `LlmStop::{MaxIters, Patience, Target, BudgetExhausted, OverfitGuard}`.
+  - 5 tests : convergence pilotée par le mock, plafond de budget, blocage de
+    candidat interdit par `safety_check`, propositions vides, déterminisme.
+- ⏭️ **Prochaines briques** : backend `llm-ollama` (HTTP local, feature-gated) ;
+  premier domaine réel « prompts » (P1.3) ; outils MCP `rsi_incumbent` /
+  `rsi_propose` / `rsi_evaluate` (P1.4).
