@@ -217,6 +217,50 @@ fn tools_list() -> Json {
         ),
         tool("rsi_reset", "Réinitialise la session à partir de sa configuration.", props(&[id()]), &[]),
         tool("rsi_list_sessions", "Liste les sessions actives.", Json::obj(), &[]),
+        tool(
+            "rsi_refine_new",
+            "Crée une session de raffinement piloté par LLM (synthèse symbolique d'expressions). \
+             Le LLM propose des expressions ; le serveur les évalue en sandbox et n'adopte que \
+             les strictement meilleures et sûres. Le LLM ne contrôle aucun garde-fou.",
+            props(&[
+                id(),
+                ("target", prop("string", "Fonction cible: 'quadratic' (x²+1), 'linear' (2x-1), 'cubic' (x³-x).")),
+                ("lo", prop("number", "Borne basse de l'intervalle d'échantillonnage (défaut -3).")),
+                ("hi", prop("number", "Borne haute (défaut 3).")),
+                ("n", prop("integer", "Nombre de points (défaut 30 ; ~30% réservés en held-out).")),
+                ("seed", prop("integer", "Graine reproductible (défaut 2026).")),
+            ]),
+            &[],
+        ),
+        tool(
+            "rsi_incumbent",
+            "Renvoie l'incumbent courant d'une session de raffinement : expression, score \
+             (fraction de cas réussis), score held-out (généralisation), taille, compteurs.",
+            props(&[id()]),
+            &[],
+        ),
+        tool(
+            "rsi_evaluate",
+            "Évalue un candidat SANS l'adopter (sonde pour le raisonnement). Renvoie score, \
+             held-out, sûreté et s'il serait adopté. N'altère pas l'incumbent.",
+            props(&[
+                id(),
+                ("candidate", prop("string", "Expression sur x (ex: 'x*x + 1'), opérateurs + - *, parenthèses.")),
+            ]),
+            &["candidate"],
+        ),
+        tool(
+            "rsi_propose",
+            "Soumet une ou plusieurs propositions d'expressions. Le serveur parse, vérifie la \
+             sûreté (taille bornée), score, et n'adopte qu'élitistement (strictement meilleur ET \
+             sûr). Renvoie le détail par proposition et le nouvel incumbent.",
+            props(&[
+                id(),
+                ("proposals", prop("array", "Tableau d'expressions candidates (chaînes).")),
+                ("candidate", prop("string", "Alternative: une ou plusieurs expressions, une par ligne.")),
+            ]),
+            &[],
+        ),
     ];
 
     let mut out = Json::obj();

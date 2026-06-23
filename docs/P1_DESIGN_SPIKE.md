@@ -350,6 +350,13 @@ Le LLM est une *source de propositions sous contrainte*, pas un pilote.
   Tests hors-ligne : round-trip parseur, infixe naturel, rejet d'entrées
   hostiles, **synthèse pilotée par un mock LLM** (converge sur `x²+1`),
   rejet d'un AST surdimensionné par `safety_check`.
-- ⏭️ **Prochaines briques** : domaine « prompts »/« config » (P1.3) ; outils
-  MCP `rsi_incumbent` / `rsi_propose` / `rsi_evaluate` (P1.4) ; backend
-  `llm-claude` (API, feature-gated).
+- ✅ **P1.4 — outils MCP** (`rsi_refine_new`, `rsi_incumbent`, `rsi_evaluate`,
+  `rsi_propose`) : exposent la boucle pour qu'un **LLM externe** la pilote via le
+  serveur MCP, le serveur restant **autoritaire** (il parse, applique
+  `safety_check`, score, n'adopte qu'élitistement — strictement meilleur ET
+  sûr ; le LLM ne contrôle aucun garde-fou). Domaine : synthèse symbolique,
+  cibles `quadratic|linear|cubic`, held-out réservé. Vérifié end-to-end en
+  JSON-RPC sur stdin. Les deux topologies coexistent désormais : `ascend_llm`
+  (RSI client du LLM, autonome) et MCP (RSI serveur, LLM client, interactif).
+- ⏭️ **Prochaines briques** : backend `llm-claude` (API, feature-gated) ;
+  domaine « prompts »/« config » (au-delà de la synthèse).

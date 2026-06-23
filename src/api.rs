@@ -19,14 +19,17 @@
 use std::collections::BTreeMap;
 
 use crate::agent::{RSIAgent, StepReport};
+use crate::ascent::RefineTask;
 use crate::dynamics::StabilityConfig;
 use crate::json::Json;
+use crate::llm::LlmRefineTask;
 use crate::loop_ctrl::{LoopConfig, StopReason};
 use crate::meta::{CmaEsMeta, MetaOptimizer, MetaSearch};
 use crate::rng::Rng;
 use crate::state::{CognitiveState, Dims};
 use crate::substrate::Substrate;
 use crate::surface::IntelligenceSurface;
+use crate::synthesis::{Expr, SymbolicSynthesis};
 use crate::{report, surface};
 
 /// Résultat d'une commande : un JSON, ou un message d'erreur.
@@ -49,6 +52,10 @@ const MAX_STEPS: usize = 100_000;
 const MAX_CANDIDATES: usize = 10_000;
 const MAX_POPULATION: usize = 4_096;
 const MAX_GENERATIONS: usize = 5_000;
+/// Nombre maximal de points d'échantillonnage d'une tâche de raffinement.
+const MAX_REFINE_POINTS: usize = 4_096;
+/// Nombre maximal de propositions traitées par appel `propose` (anti-DoS).
+const MAX_PROPOSALS_PER_CALL: usize = 64;
 
 /// Lit un entier de config, applique un plancher et un plafond de sécurité.
 fn bounded(cfg: &Json, key: &str, default: usize, lo: usize, hi: usize) -> usize {
@@ -64,15 +71,34 @@ struct Session {
     config: Json,
 }
 
-/// Gestionnaire de sessions d'agents RSI piloté par commandes JSON.
+/// Session de **raffinement piloté par LLM** : le client (un LLM) lit
+/// l'incumbent, propose des candidats *en texte* ; le serveur reste autoritaire
+/// (il parse, applique `safety_check`, score, et n'adopte qu'élitistement —
+/// strictement meilleur ET sûr). Le client ne contrôle aucun garde-fou.
+struct RefineSession {
+    task: SymbolicSynthesis,
+    incumbent: Expr,
+    target: String,
+    proposals_seen: usize,
+    accepted: usize,
+    rejected_unsafe: usize,
+    rejected_worse: usize,
+    rejected_unparsed: usize,
+}
+
+/// Gestionnaire de sessions RSI piloté par commandes JSON.
 #[derive(Default)]
 pub struct RsiApi {
     sessions: BTreeMap<String, Session>,
+    refines: BTreeMap<String, RefineSession>,
 }
 
 impl RsiApi {
     pub fn new() -> Self {
-        RsiApi { sessions: BTreeMap::new() }
+        RsiApi {
+            sessions: BTreeMap::new(),
+            refines: BTreeMap::new(),
+        }
     }
 
     /// Point d'entrée unique : dispatche `command` avec ses `params`.
@@ -87,6 +113,11 @@ impl RsiApi {
             "export" => self.cmd_export(params),
             "reset" => self.cmd_reset(params),
             "list_sessions" => Ok(self.cmd_list()),
+            // --- raffinement piloté par LLM (P1.4) ---
+            "refine_new" => self.cmd_refine_new(params),
+            "incumbent" => self.cmd_incumbent(params),
+            "evaluate" => self.cmd_evaluate(params),
+            "propose" => self.cmd_propose(params),
             other => Err(format!("commande inconnue : '{other}'")),
         }
     }
@@ -275,6 +306,211 @@ impl RsiApi {
         out.set("sessions", Json::Arr(arr));
         out
     }
+
+    // ------------------------------------------------------------------ //
+    // Raffinement piloté par LLM (P1.4) — le serveur reste autoritaire.
+    // ------------------------------------------------------------------ //
+
+    fn refine_mut(&mut self, id: &str) -> Result<&mut RefineSession, String> {
+        self.refines
+            .get_mut(id)
+            .ok_or_else(|| format!("session de raffinement inconnue : '{id}' (appelez d'abord 'refine_new')"))
+    }
+
+    /// Crée une session de raffinement (domaine de synthèse symbolique).
+    fn cmd_refine_new(&mut self, params: &Json) -> ApiResult {
+        let id = Self::session_id(params);
+        if !self.refines.contains_key(&id) && self.refines.len() >= MAX_SESSIONS {
+            return Err(format!("limite de {MAX_SESSIONS} sessions de raffinement atteinte"));
+        }
+        let target = params
+            .get("target")
+            .and_then(|v| v.as_str())
+            .unwrap_or("quadratic")
+            .to_string();
+        let f = target_fn(&target)?;
+        let lo = params.get("lo").and_then(|v| v.as_f64()).unwrap_or(-3.0);
+        let hi = params.get("hi").and_then(|v| v.as_f64()).unwrap_or(3.0);
+        if !lo.is_finite() || !hi.is_finite() || hi <= lo {
+            return Err("intervalle invalide : exiger lo < hi finis".into());
+        }
+        let n = bounded(params, "n", 30, 4, MAX_REFINE_POINTS);
+        let seed = params.get("seed").and_then(|v| v.as_u64()).unwrap_or(2026);
+
+        let task = SymbolicSynthesis::from_target_split(f, lo, hi, n, seed);
+        let incumbent = task.seed_candidate();
+        let s = RefineSession {
+            task,
+            incumbent,
+            target,
+            proposals_seen: 0,
+            accepted: 0,
+            rejected_unsafe: 0,
+            rejected_worse: 0,
+            rejected_unparsed: 0,
+        };
+        let info = incumbent_json(&s);
+        self.refines.insert(id.clone(), s);
+
+        let mut out = Json::obj();
+        out.set("ok", Json::Bool(true))
+            .set("id", Json::Str(id))
+            .set("incumbent", info);
+        Ok(out)
+    }
+
+    /// Renvoie l'incumbent courant (texte, score train, score held-out, compteurs).
+    fn cmd_incumbent(&mut self, params: &Json) -> ApiResult {
+        let id = Self::session_id(params);
+        let s = self.refine_mut(&id)?;
+        let mut out = incumbent_json(s);
+        out.set("ok", Json::Bool(true)).set("id", Json::Str(id));
+        Ok(out)
+    }
+
+    /// Évalue un candidat **sans l'adopter** (sonde pour le raisonnement LLM).
+    fn cmd_evaluate(&mut self, params: &Json) -> ApiResult {
+        let id = Self::session_id(params);
+        let cand = params
+            .get("candidate")
+            .or_else(|| params.get("text"))
+            .and_then(|v| v.as_str())
+            .ok_or("paramètre 'candidate' (texte de l'expression) requis")?
+            .to_string();
+        let s = self.refine_mut(&id)?;
+
+        let mut out = Json::obj();
+        out.set("ok", Json::Bool(true)).set("id", Json::Str(id));
+        match Expr::parse(&cand) {
+            Err(e) => {
+                out.set("parseable", Json::Bool(false)).set("error", Json::Str(e));
+            }
+            Ok(expr) => {
+                let cur = s.task.score(&s.incumbent);
+                let fit = s.task.score(&expr);
+                let ho = s.task.score_heldout(&expr);
+                let safe = s.task.safety_check(&expr);
+                out.set("parseable", Json::Bool(true))
+                    .set("pretty", Json::Str(expr.pretty()))
+                    .set("size", Json::Num(expr.size() as f64))
+                    .set("score", Json::Num(fit))
+                    .set("heldout", Json::Num(ho))
+                    .set("incumbent_score", Json::Num(cur))
+                    .set("safe", Json::Bool(safe.is_ok()))
+                    .set("would_adopt", Json::Bool(safe.is_ok() && fit > cur));
+                if let Err(v) = safe {
+                    out.set("safety_reason", Json::Str(v.0));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Soumet une ou plusieurs propositions. Le serveur parse, applique
+    /// `safety_check`, score, et **n'adopte qu'élitistement** (strictement
+    /// meilleur ET sûr). Le client ne contourne aucun garde-fou.
+    fn cmd_propose(&mut self, params: &Json) -> ApiResult {
+        let id = Self::session_id(params);
+        let raw: Vec<String> = if let Some(arr) = params.get("proposals").and_then(|v| v.as_array())
+        {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .take(MAX_PROPOSALS_PER_CALL)
+                .collect()
+        } else if let Some(text) = params
+            .get("candidate")
+            .or_else(|| params.get("text"))
+            .and_then(|v| v.as_str())
+        {
+            text.lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .take(MAX_PROPOSALS_PER_CALL)
+                .collect()
+        } else {
+            return Err("fournir 'proposals' (tableau de chaînes) ou 'candidate' (texte)".into());
+        };
+        if raw.is_empty() {
+            return Err("aucune proposition fournie".into());
+        }
+
+        let s = self.refine_mut(&id)?;
+        let mut cur = s.task.score(&s.incumbent);
+        let mut adopted_any = false;
+        let mut results: Vec<Json> = Vec::with_capacity(raw.len());
+
+        for r in &raw {
+            s.proposals_seen += 1;
+            let mut item = Json::obj();
+            item.set("input", Json::Str(r.clone()));
+            match Expr::parse(r) {
+                Err(e) => {
+                    s.rejected_unparsed += 1;
+                    item.set("status", Json::Str("unparsed".into()))
+                        .set("error", Json::Str(e));
+                }
+                Ok(expr) => {
+                    item.set("pretty", Json::Str(expr.pretty()))
+                        .set("size", Json::Num(expr.size() as f64));
+                    if let Err(v) = s.task.safety_check(&expr) {
+                        s.rejected_unsafe += 1;
+                        item.set("status", Json::Str("rejected_unsafe".into()))
+                            .set("reason", Json::Str(v.0));
+                    } else {
+                        let fit = s.task.score(&expr);
+                        item.set("score", Json::Num(fit));
+                        if fit > cur {
+                            s.incumbent = expr;
+                            cur = fit;
+                            s.accepted += 1;
+                            adopted_any = true;
+                            item.set("status", Json::Str("adopted".into()));
+                        } else {
+                            s.rejected_worse += 1;
+                            item.set("status", Json::Str("rejected_worse".into()));
+                        }
+                    }
+                }
+            }
+            results.push(item);
+        }
+
+        let mut out = Json::obj();
+        out.set("ok", Json::Bool(true))
+            .set("id", Json::Str(id))
+            .set("adopted", Json::Bool(adopted_any))
+            .set("results", Json::Arr(results))
+            .set("incumbent", incumbent_json(s));
+        Ok(out)
+    }
+}
+
+/// Résout une cible de raffinement (preset → fonction). Seuls des presets
+/// exprimables par l'AST (polynômes) sont proposés.
+fn target_fn(name: &str) -> Result<fn(f64) -> f64, String> {
+    match name {
+        "quadratic" => Ok(|x| x * x + 1.0),
+        "linear" => Ok(|x| 2.0 * x - 1.0),
+        "cubic" => Ok(|x| x * x * x - x),
+        other => Err(format!("cible inconnue : '{other}' (quadratic|linear|cubic)")),
+    }
+}
+
+/// Vue JSON de l'incumbent d'une session de raffinement + compteurs.
+fn incumbent_json(s: &RefineSession) -> Json {
+    let mut o = Json::obj();
+    o.set("pretty", Json::Str(s.incumbent.pretty()))
+        .set("size", Json::Num(s.incumbent.size() as f64))
+        .set("score", Json::Num(s.task.score(&s.incumbent)))
+        .set("heldout", Json::Num(s.task.score_heldout(&s.incumbent)))
+        .set("target", Json::Str(s.target.clone()))
+        .set("accepted", Json::Num(s.accepted as f64))
+        .set("proposals_seen", Json::Num(s.proposals_seen as f64))
+        .set("rejected_unsafe", Json::Num(s.rejected_unsafe as f64))
+        .set("rejected_worse", Json::Num(s.rejected_worse as f64))
+        .set("rejected_unparsed", Json::Num(s.rejected_unparsed as f64))
+        .set("heldout_cases", Json::Num(s.task.heldout_len() as f64));
+    o
 }
 
 // ---------------------------------------------------------------------- //
@@ -420,6 +656,10 @@ de stabilité (‖ΔS‖<λ et non-régression de SI_global)."
         ("export", "Exporte la trajectoire. Params: id, format(csv|json)."),
         ("reset", "Réinitialise la session. Params: id."),
         ("list_sessions", "Liste les sessions actives."),
+        ("refine_new", "Crée une session de raffinement piloté par LLM (synthèse symbolique). Params: id, target(quadratic|linear|cubic), lo, hi, n, seed. Renvoie l'incumbent."),
+        ("incumbent", "Renvoie l'incumbent courant (expression, score train, score held-out, compteurs). Params: id."),
+        ("evaluate", "Évalue un candidat SANS l'adopter (sonde). Params: id, candidate (texte d'expression). Renvoie score, held-out, safe, would_adopt."),
+        ("propose", "Soumet des propositions ; le serveur parse, vérifie la sûreté, score et n'adopte qu'élitistement (strictement meilleur ET sûr). Params: id, proposals (tableau de chaînes) ou candidate (texte). Le LLM ne contrôle aucun garde-fou."),
     ];
     let arr: Vec<Json> = commands
         .iter()
@@ -534,5 +774,82 @@ mod tests {
             .set("n_hardware", Json::Num(1e9));
         // ne doit ni paniquer ni épuiser la mémoire : les bornes s'appliquent
         assert!(api.handle("create", &c).is_ok());
+    }
+
+    // --- raffinement piloté par LLM (P1.4) ------------------------------ //
+
+    fn refine(api: &mut RsiApi, id: &str) {
+        let mut c = Json::obj();
+        c.set("id", Json::Str(id.into()));
+        api.handle("refine_new", &c).unwrap();
+    }
+
+    #[test]
+    fn refine_propose_adopts_strictly_better() {
+        let mut api = RsiApi::new();
+        refine(&mut api, "r");
+        let mut p = Json::obj();
+        p.set("id", Json::Str("r".into()))
+            .set("proposals", Json::Arr(vec![Json::Str("x*x + 1".into())]));
+        let res = api.handle("propose", &p).unwrap();
+        assert_eq!(res.get("adopted").and_then(|v| v.as_bool()), Some(true));
+        let inc = res.get("incumbent").unwrap();
+        assert!(inc.get("score").and_then(|v| v.as_f64()).unwrap() > 0.9);
+        assert!(inc.get("heldout_cases").and_then(|v| v.as_f64()).unwrap() > 0.0);
+    }
+
+    #[test]
+    fn refine_evaluate_does_not_mutate_incumbent() {
+        let mut api = RsiApi::new();
+        refine(&mut api, "e");
+        let mut ev = Json::obj();
+        ev.set("id", Json::Str("e".into()))
+            .set("candidate", Json::Str("x*x + 1".into()));
+        let res = api.handle("evaluate", &ev).unwrap();
+        assert_eq!(res.get("parseable").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(res.get("would_adopt").and_then(|v| v.as_bool()), Some(true));
+        // evaluate ne mute pas : aucune adoption enregistrée
+        let mut q = Json::obj();
+        q.set("id", Json::Str("e".into()));
+        let inc = api.handle("incumbent", &q).unwrap();
+        assert_eq!(inc.get("accepted").and_then(|v| v.as_f64()), Some(0.0));
+    }
+
+    #[test]
+    fn refine_propose_enforces_safety_and_parsing() {
+        let mut api = RsiApi::new();
+        refine(&mut api, "s");
+        let huge = (0..40).map(|_| "x").collect::<Vec<_>>().join(" + "); // 79 nœuds > 25
+        let mut p = Json::obj();
+        p.set("id", Json::Str("s".into())).set(
+            "proposals",
+            Json::Arr(vec![
+                Json::Str("garbage(".into()), // non parsable
+                Json::Str(huge),              // trop complexe (rejet sûreté)
+                Json::Str("x*x + 1".into()),  // adopté
+            ]),
+        );
+        let res = api.handle("propose", &p).unwrap();
+        let inc = res.get("incumbent").unwrap();
+        assert_eq!(inc.get("rejected_unparsed").and_then(|v| v.as_f64()), Some(1.0));
+        assert_eq!(inc.get("rejected_unsafe").and_then(|v| v.as_f64()), Some(1.0));
+        assert_eq!(inc.get("accepted").and_then(|v| v.as_f64()), Some(1.0));
+    }
+
+    #[test]
+    fn refine_unknown_session_errors() {
+        let mut api = RsiApi::new();
+        let mut q = Json::obj();
+        q.set("id", Json::Str("nope".into()));
+        assert!(api.handle("incumbent", &q).is_err());
+        assert!(api.handle("propose", &q).is_err());
+    }
+
+    #[test]
+    fn refine_unknown_target_errors() {
+        let mut api = RsiApi::new();
+        let mut c = Json::obj();
+        c.set("id", Json::Str("t".into())).set("target", Json::Str("exp".into()));
+        assert!(api.handle("refine_new", &c).is_err());
     }
 }
