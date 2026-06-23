@@ -337,6 +337,11 @@ Le LLM est une *source de propositions sous contrainte*, pas un pilote.
     avec `LlmStop::{MaxIters, Patience, Target, BudgetExhausted, OverfitGuard}`.
   - 5 tests : convergence pilotée par le mock, plafond de budget, blocage de
     candidat interdit par `safety_check`, propositions vides, déterminisme.
-- ⏭️ **Prochaines briques** : backend `llm-ollama` (HTTP local, feature-gated) ;
-  premier domaine réel « prompts » (P1.3) ; outils MCP `rsi_incumbent` /
-  `rsi_propose` / `rsi_evaluate` (P1.4).
+- ✅ **Backend Ollama local** (`OllamaClient`, feature `llm-ollama`) : client
+  HTTP/1.1 minimal sur `std::net::TcpStream` + `crate::json`, **zéro
+  dépendance**. `/api/generate` non-streamé sur `127.0.0.1:11434` (réglable).
+  Parties pures (`build_request` / `parse_response`) testées hors-ligne
+  (4 tests) ; l'appel réseau réel reste à valider sur une machine avec Ollama.
+- ⏭️ **Prochaines briques** : premier domaine réel « prompts » (P1.3) ; outils
+  MCP `rsi_incumbent` / `rsi_propose` / `rsi_evaluate` (P1.4) ; backend
+  `llm-claude` (API, feature-gated).

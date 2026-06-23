@@ -32,6 +32,9 @@ ccos = ["dep:ccos"]
 # (vendor/scirust-rsi) — reconstruction API-compatible, hors-ligne, ne tirant
 # que `rand`. Voir SCIRUST_ACTIVATION.md. Activer avec : --features scirust.
 scirust = ["dep:scirust-rsi", "dep:rand"]
+# Backend LLM local Ollama (client HTTP minimal sur std::net, sans dépendance).
+# Active OllamaClient pour brancher un modèle local (http://localhost:11434).
+llm-ollama = []
 
 [dependencies]
 forge-core = { git = "https://github.com/CHECKUPAUTO/forge", optional = true }

@@ -314,6 +314,125 @@ impl LlmClient for MockLlmClient {
     }
 }
 
+// ===================== Backend Ollama (feature `llm-ollama`) ============== //
+//
+// Client LLM local sans aucune dépendance : un client HTTP/1.1 minimal sur
+// `std::net::TcpStream`, et notre propre `crate::json` pour (dé)sérialiser.
+// Parle à l'API Ollama `/api/generate` en mode non-streamé. Le prompt (construit
+// par le domaine via `describe`) est censé demander au modèle une proposition
+// par ligne ; `parse_response` découpe la réponse en lignes non vides.
+
+/// Client LLM local adossé à Ollama (`http://host:port`, défaut
+/// `127.0.0.1:11434`). HTTP minimal sur `std::net`, zéro dépendance.
+#[cfg(feature = "llm-ollama")]
+pub struct OllamaClient {
+    host: String,
+    port: u16,
+    model: String,
+    timeout: std::time::Duration,
+}
+
+#[cfg(feature = "llm-ollama")]
+impl OllamaClient {
+    /// Client par défaut (`127.0.0.1:11434`, timeout 60 s) pour `model`.
+    pub fn new(model: impl Into<String>) -> Self {
+        OllamaClient {
+            host: "127.0.0.1".to_string(),
+            port: 11434,
+            model: model.into(),
+            timeout: std::time::Duration::from_secs(60),
+        }
+    }
+    pub fn with_endpoint(mut self, host: impl Into<String>, port: u16) -> Self {
+        self.host = host.into();
+        self.port = port;
+        self
+    }
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+}
+
+/// Construit la requête HTTP/1.1 brute pour `/api/generate` (fonction pure,
+/// testable hors-ligne). Le corps JSON est sérialisé par `crate::json` (gère
+/// l'échappement des sauts de ligne / guillemets du prompt).
+#[cfg(feature = "llm-ollama")]
+fn build_request(host: &str, port: u16, model: &str, prompt: &str) -> String {
+    let mut body = crate::json::Json::obj();
+    body.set("model", crate::json::Json::Str(model.to_string()));
+    body.set("prompt", crate::json::Json::Str(prompt.to_string()));
+    body.set("stream", crate::json::Json::Bool(false));
+    let body = body.to_string();
+    format!(
+        "POST /api/generate HTTP/1.1\r\n\
+         Host: {host}:{port}\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {len}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {body}",
+        len = body.len()
+    )
+}
+
+/// Extrait les propositions (une par ligne non vide) d'une réponse HTTP Ollama
+/// non-streamée (fonction pure, testable hors-ligne). Suppose un corps
+/// non chunké (Ollama envoie Content-Length en mode `stream:false`).
+#[cfg(feature = "llm-ollama")]
+fn parse_response(raw: &str) -> Result<Vec<String>, LlmError> {
+    let body = raw
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b)
+        .ok_or_else(|| LlmError::Backend("réponse HTTP sans corps".to_string()))?;
+    let json = crate::json::Json::parse(body.trim())
+        .map_err(|e| LlmError::Backend(format!("JSON Ollama invalide: {e}")))?;
+    let text = json
+        .get("response")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| LlmError::Backend("champ 'response' absent".to_string()))?;
+    let props: Vec<String> = text
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if props.is_empty() {
+        Err(LlmError::Empty)
+    } else {
+        Ok(props)
+    }
+}
+
+#[cfg(feature = "llm-ollama")]
+impl LlmClient for OllamaClient {
+    fn propose(&self, prompt: &str, _k: usize) -> Result<Vec<String>, LlmError> {
+        use std::io::{Read, Write};
+        use std::net::{TcpStream, ToSocketAddrs};
+
+        let addr = format!("{}:{}", self.host, self.port);
+        let sockaddr = addr
+            .to_socket_addrs()
+            .map_err(|e| LlmError::Backend(format!("résolution {addr}: {e}")))?
+            .next()
+            .ok_or_else(|| LlmError::Backend(format!("adresse {addr} irrésolue")))?;
+        let mut stream = TcpStream::connect_timeout(&sockaddr, self.timeout)
+            .map_err(|e| LlmError::Backend(format!("connexion Ollama: {e}")))?;
+        stream.set_read_timeout(Some(self.timeout)).ok();
+        stream.set_write_timeout(Some(self.timeout)).ok();
+
+        let req = build_request(&self.host, self.port, &self.model, prompt);
+        stream
+            .write_all(req.as_bytes())
+            .map_err(|e| LlmError::Backend(format!("écriture: {e}")))?;
+
+        let mut raw = String::new();
+        stream
+            .read_to_string(&mut raw)
+            .map_err(|e| LlmError::Backend(format!("lecture: {e}")))?;
+        parse_response(&raw)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,5 +556,48 @@ mod tests {
         assert_eq!(b1, b2);
         assert_eq!(r1.history, r2.history);
         assert_eq!(r1.llm_calls, r2.llm_calls);
+    }
+}
+
+#[cfg(all(test, feature = "llm-ollama"))]
+mod ollama_tests {
+    use super::*;
+
+    #[test]
+    fn request_is_well_formed_http() {
+        let req = build_request("127.0.0.1", 11434, "llama3.2", "salut\n\"x\"");
+        assert!(req.starts_with("POST /api/generate HTTP/1.1\r\n"));
+        assert!(req.contains("Host: 127.0.0.1:11434\r\n"));
+        assert!(req.contains("Content-Type: application/json\r\n"));
+        assert!(req.contains("Connection: close\r\n"));
+        let (_, body) = req.split_once("\r\n\r\n").unwrap();
+        // Content-Length cohérent avec la taille réelle (octets) du corps
+        assert!(req.contains(&format!("Content-Length: {}\r\n", body.len())));
+        // corps = JSON valide, prompt échappé correctement
+        let j = crate::json::Json::parse(body).unwrap();
+        assert_eq!(j.get("model").unwrap().as_str(), Some("llama3.2"));
+        assert_eq!(j.get("prompt").unwrap().as_str(), Some("salut\n\"x\""));
+        assert_eq!(j.get("stream").unwrap().as_bool(), Some(false));
+    }
+
+    #[test]
+    fn parses_ollama_response_into_lines() {
+        let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n\
+                    {\"response\":\"alpha\\nbeta\\n\\n  gamma  \",\"done\":true}";
+        assert_eq!(parse_response(resp).unwrap(), vec!["alpha", "beta", "gamma"]);
+    }
+
+    #[test]
+    fn empty_response_yields_empty_error() {
+        let resp = "HTTP/1.1 200 OK\r\n\r\n{\"response\":\"   \"}";
+        assert_eq!(parse_response(resp), Err(LlmError::Empty));
+    }
+
+    #[test]
+    fn malformed_body_yields_backend_error() {
+        let resp = "HTTP/1.1 200 OK\r\n\r\npas du json";
+        assert!(matches!(parse_response(resp), Err(LlmError::Backend(_))));
+        // réponse sans corps
+        assert!(matches!(parse_response("HTTP/1.1 500\r\n"), Err(LlmError::Backend(_))));
     }
 }
