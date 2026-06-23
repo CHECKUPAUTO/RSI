@@ -79,15 +79,19 @@ impl<'a> Dynamics<'a> {
 
     /// η(S,H,O) ∈ (0, η₀] — meilleur substrat & mémoire ⇒ apprentissage plus
     /// rapide ; la saturation des compétences le freine.
+    ///
+    /// La saturation ne porte que sur les **compétences cognitives saturantes**
+    /// (D, M, R) — pas sur l'autonomie A ni les valeurs V, qui ne sont pas des
+    /// capacités dont la progression ralentirait l'apprentissage. On utilise
+    /// `capability_array()` (tableau stack `[f64;6]`, zero-alloc) au lieu de
+    /// `to_vector()` qui allouait un `Vec<f64>` à chaque appel (or `eta` est
+    /// appelé dans `velocity` → `constrained_step`, lui-même dans une boucle
+    /// de line search jusqu'à 20× par pas).
     pub fn eta(&self, state: &CognitiveState, substrate: &Substrate) -> f64 {
         let p_eff = substrate.effective_power();
-        let memory = mean(&state.c);
-        // Saturation des *compétences* (D, M, R) uniquement — ni A/V (autonomie,
-        // valeurs, qui ne sont pas des compétences saturantes) ni C (mémoire, déjà
-        // prise en compte ci-dessus). Tableau sur la pile : aucune allocation
-        // (η est appelé jusqu'à 20× par pas dans la line search).
-        let competence = mean(&[mean(&state.d), mean(&state.m), mean(&state.r)]);
-        let saturation = (1.0 - competence).clamp(0.0, 1.0);
+        let caps = state.capability_array(); // [D, M, R, A, C, V], zero-alloc
+        let memory = caps[4]; // C
+        let saturation = (1.0 - (caps[0] + caps[1] + caps[2]) / 3.0).clamp(0.0, 1.0);
         self.config.eta0 * p_eff * (0.5 + 0.5 * memory) * saturation
     }
 

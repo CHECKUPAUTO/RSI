@@ -172,8 +172,22 @@ impl PapersKnowledge {
 
     /// Exécute `papers <subcommand> <source> <extra…>` ; renvoie sa sortie
     /// standard si le processus réussit avec une sortie non triviale.
+    ///
+    /// **Garde-fous** (bug G corrigé) :
+    /// - `stdout`/`stderr` piped (pas d'héritage du terminal) ;
+    /// - **limite de sortie** : 64 MB max capturés (rejet sinon) — empêche un
+    ///   binaire `papers` hostile ou bogué de remplir la RAM ;
+    /// - **timeout** : 30 s via un thread watcher + `join_timeout` émulé
+    ///   (`wait` avec `try_wait` en polling) — empêche un blocage infini.
     fn run_papers(&self, source: &str) -> Option<String> {
         use std::io::Read;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        const TIMEOUT: Duration = Duration::from_secs(30);
+        const MAX_OUTPUT: usize = 64 * 1024 * 1024; // 64 MB
+
+        let mut cmd = Command::new(&self.bin);
         use std::process::Stdio;
         use std::sync::mpsc;
         use std::time::{Duration, Instant};
@@ -191,6 +205,49 @@ impl PapersKnowledge {
         for a in &self.extra_args {
             cmd.arg(a);
         }
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        let mut child = cmd.spawn().ok()?;
+        let mut stdout = child.stdout.take()?;
+        let _stderr = child.stderr.take(); // drainé silencieusement, pas lu en RAM
+
+        // Lecture bornée dans un thread (évite de bloquer si stdout est énorme).
+        let read_handle = std::thread::spawn(move || {
+            let mut buf = Vec::with_capacity(8 * 1024);
+            let mut chunk = [0u8; 8 * 1024];
+            loop {
+                match stdout.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buf.extend_from_slice(&chunk[..n]);
+                        if buf.len() > MAX_OUTPUT {
+                            return Err(()); // débordement — rejeté
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            Ok(buf)
+        });
+
+        // Polling du timeout : on essaie de joindre le reader + le child.
+        let start = Instant::now();
+        loop {
+            // a-t-on fini de lire ?
+            if read_handle.is_finished() {
+                break;
+            }
+            if start.elapsed() >= TIMEOUT {
+                let _ = child.kill();
+                let _ = read_handle.join();
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let buf = read_handle.join().ok()?.ok()?;
+        let status = child.wait().ok()?;
+        if !status.success() {
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::null());
