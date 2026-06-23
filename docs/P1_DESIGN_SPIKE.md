@@ -358,5 +358,11 @@ Le LLM est une *source de propositions sous contrainte*, pas un pilote.
   cibles `quadratic|linear|cubic`, held-out réservé. Vérifié end-to-end en
   JSON-RPC sur stdin. Les deux topologies coexistent désormais : `ascend_llm`
   (RSI client du LLM, autonome) et MCP (RSI serveur, LLM client, interactif).
-- ⏭️ **Prochaines briques** : backend `llm-claude` (API, feature-gated) ;
-  domaine « prompts »/« config » (au-delà de la synthèse).
+- ✅ **Backend Claude** (`ClaudeClient`, feature `llm-claude`) : API Anthropic
+  Messages. `std` n'ayant pas de TLS, le **transport HTTPS est injecté** par
+  l'hôte (trait `ClaudeTransport`) ; toute la logique (construction de requête,
+  parsing réponse + erreurs API) est **std-only et testée hors-ligne** via un
+  transport mock (5 tests). Le branchement d'une pile TLS réelle (p. ex.
+  `ureq`/`rustls`) côté hôte reste à faire dans un environnement avec réseau.
+- ⏭️ **Prochaines briques** : transport TLS turnkey pour Claude (dépendance
+  optionnelle, hors environnement hors-ligne) ; domaine « prompts »/« config ».

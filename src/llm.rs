@@ -433,6 +433,136 @@ impl LlmClient for OllamaClient {
     }
 }
 
+// ===================== Backend Claude (feature `llm-claude`) ============== //
+//
+// API Anthropic Messages (`POST /v1/messages`, HTTPS). `std` n'offrant pas de
+// TLS, le **transport** est injecté par l'hôte via [`ClaudeTransport`] : le cœur
+// reste sans dépendance, et toute la logique bug-prone (construction de la
+// requête, parsing de la réponse, gestion des erreurs API) est std-only et
+// testable hors-ligne avec un transport mock.
+
+/// Transport HTTPS injecté pour le backend Claude. Seul point qui touche le
+/// réseau/TLS ; à implémenter par l'hôte (p. ex. au-dessus de `ureq`/`rustls`).
+#[cfg(feature = "llm-claude")]
+pub trait ClaudeTransport {
+    /// POST `body` (JSON) à `url` avec les `headers` donnés ; renvoie le corps
+    /// de la réponse en texte, ou une erreur de transport.
+    fn post_json(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+        body: &str,
+    ) -> Result<String, String>;
+}
+
+/// Client LLM Claude (API Anthropic Messages), générique sur le transport HTTPS.
+#[cfg(feature = "llm-claude")]
+pub struct ClaudeClient<T: ClaudeTransport> {
+    transport: T,
+    api_key: String,
+    model: String,
+    max_tokens: u32,
+    base_url: String,
+}
+
+#[cfg(feature = "llm-claude")]
+impl<T: ClaudeTransport> ClaudeClient<T> {
+    /// `model` explicite (p. ex. `claude-sonnet-4-6` pour un bon rapport
+    /// coût/qualité en boucle, `claude-opus-4-8` pour la capacité maximale).
+    pub fn new(transport: T, api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        ClaudeClient {
+            transport,
+            api_key: api_key.into(),
+            model: model.into(),
+            max_tokens: 1024,
+            base_url: "https://api.anthropic.com".to_string(),
+        }
+    }
+    pub fn with_max_tokens(mut self, n: u32) -> Self {
+        self.max_tokens = n;
+        self
+    }
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
+        self.base_url = url.into();
+        self
+    }
+}
+
+/// Corps JSON d'une requête Messages API (fonction pure, testable hors-ligne).
+#[cfg(feature = "llm-claude")]
+fn claude_request_body(model: &str, prompt: &str, max_tokens: u32) -> String {
+    let mut msg = crate::json::Json::obj();
+    msg.set("role", crate::json::Json::Str("user".to_string()));
+    msg.set("content", crate::json::Json::Str(prompt.to_string()));
+
+    let mut body = crate::json::Json::obj();
+    body.set("model", crate::json::Json::Str(model.to_string()));
+    body.set("max_tokens", crate::json::Json::Num(max_tokens as f64));
+    body.set("messages", crate::json::Json::Arr(vec![msg]));
+    body.to_string()
+}
+
+/// Extrait les propositions (une par ligne non vide) d'une réponse Messages API
+/// (fonction pure). Gère le format succès (`content: [{type:text, text}]`) et
+/// le format erreur Anthropic (`{type:error, error:{message}}`).
+#[cfg(feature = "llm-claude")]
+fn parse_claude_response(body: &str) -> Result<Vec<String>, LlmError> {
+    let json = crate::json::Json::parse(body)
+        .map_err(|e| LlmError::Backend(format!("JSON Claude invalide: {e}")))?;
+
+    // erreur API explicite
+    if json.get("type").and_then(|v| v.as_str()) == Some("error") {
+        let msg = json
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("erreur API Claude");
+        return Err(LlmError::Backend(msg.to_string()));
+    }
+
+    let content = json
+        .get("content")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| LlmError::Backend("champ 'content' absent".to_string()))?;
+    let mut text = String::new();
+    for block in content {
+        if block.get("type").and_then(|v| v.as_str()) == Some("text") {
+            if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                text.push_str(t);
+                text.push('\n');
+            }
+        }
+    }
+    let props: Vec<String> = text
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if props.is_empty() {
+        Err(LlmError::Empty)
+    } else {
+        Ok(props)
+    }
+}
+
+#[cfg(feature = "llm-claude")]
+impl<T: ClaudeTransport> LlmClient for ClaudeClient<T> {
+    fn propose(&self, prompt: &str, _k: usize) -> Result<Vec<String>, LlmError> {
+        let body = claude_request_body(&self.model, prompt, self.max_tokens);
+        let headers = vec![
+            ("x-api-key".to_string(), self.api_key.clone()),
+            ("anthropic-version".to_string(), "2023-06-01".to_string()),
+            ("content-type".to_string(), "application/json".to_string()),
+        ];
+        let url = format!("{}/v1/messages", self.base_url);
+        let resp = self
+            .transport
+            .post_json(&url, &headers, &body)
+            .map_err(LlmError::Backend)?;
+        parse_claude_response(&resp)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -599,5 +729,78 @@ mod ollama_tests {
         assert!(matches!(parse_response(resp), Err(LlmError::Backend(_))));
         // réponse sans corps
         assert!(matches!(parse_response("HTTP/1.1 500\r\n"), Err(LlmError::Backend(_))));
+    }
+}
+
+#[cfg(all(test, feature = "llm-claude"))]
+mod claude_tests {
+    use super::*;
+
+    /// Transport hors-ligne : renvoie un corps canné (réponse Anthropic simulée).
+    struct MockTransport {
+        body: String,
+        fail: bool,
+    }
+    impl ClaudeTransport for MockTransport {
+        fn post_json(&self, url: &str, headers: &[(String, String)], body: &str) -> Result<String, String> {
+            // vérifie que le client envoie bien l'URL, les en-têtes et un corps JSON valides
+            assert!(url.ends_with("/v1/messages"), "url = {url}");
+            assert!(headers.iter().any(|(k, _)| k == "x-api-key"));
+            assert!(headers.iter().any(|(k, v)| k == "anthropic-version" && !v.is_empty()));
+            assert!(crate::json::Json::parse(body).is_ok(), "corps non JSON: {body}");
+            if self.fail {
+                Err("transport en panne".to_string())
+            } else {
+                Ok(self.body.clone())
+            }
+        }
+    }
+
+    #[test]
+    fn request_body_is_valid_messages_json() {
+        let body = claude_request_body("claude-sonnet-4-6", "salut\n\"x\"", 256);
+        let j = crate::json::Json::parse(&body).unwrap();
+        assert_eq!(j.get("model").unwrap().as_str(), Some("claude-sonnet-4-6"));
+        assert_eq!(j.get("max_tokens").unwrap().as_u64(), Some(256));
+        let msgs = j.get("messages").unwrap().as_array().unwrap();
+        assert_eq!(msgs[0].get("role").unwrap().as_str(), Some("user"));
+        assert_eq!(msgs[0].get("content").unwrap().as_str(), Some("salut\n\"x\""));
+    }
+
+    #[test]
+    fn parses_messages_text_blocks_into_lines() {
+        let resp = r#"{"content":[{"type":"text","text":"alpha\nbeta"},{"type":"text","text":"\ngamma"}],"role":"assistant"}"#;
+        assert_eq!(parse_claude_response(resp).unwrap(), vec!["alpha", "beta", "gamma"]);
+    }
+
+    #[test]
+    fn parses_api_error_as_backend_error() {
+        let resp = r#"{"type":"error","error":{"type":"overloaded_error","message":"surcharge"}}"#;
+        match parse_claude_response(resp) {
+            Err(LlmError::Backend(m)) => assert!(m.contains("surcharge")),
+            other => panic!("attendu Backend(surcharge), obtenu {other:?}"),
+        }
+    }
+
+    #[test]
+    fn client_end_to_end_with_mock_transport() {
+        let body = r#"{"content":[{"type":"text","text":"x*x + 1\nx + 2"}]}"#;
+        let client = ClaudeClient::new(
+            MockTransport { body: body.to_string(), fail: false },
+            "sk-test",
+            "claude-sonnet-4-6",
+        );
+        let props = client.propose("propose des expressions", 4).unwrap();
+        assert_eq!(props, vec!["x*x + 1", "x + 2"]);
+    }
+
+    #[test]
+    fn transport_failure_is_backend_error() {
+        let client = ClaudeClient::new(
+            MockTransport { body: String::new(), fail: true },
+            "sk-test",
+            "claude-sonnet-4-6",
+        );
+        assert!(matches!(client.propose("p", 1), Err(LlmError::Backend(_))));
     }
 }

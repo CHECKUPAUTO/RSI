@@ -35,6 +35,10 @@ scirust = ["dep:scirust-rsi", "dep:rand"]
 # Backend LLM local Ollama (client HTTP minimal sur std::net, sans dépendance).
 # Active OllamaClient pour brancher un modèle local (http://localhost:11434).
 llm-ollama = []
+# Backend LLM Claude (API Anthropic Messages). std-only : la logique (requête /
+# parsing) est sans dépendance ; le transport HTTPS/TLS est injecté par l'hôte
+# (trait ClaudeTransport), car std n'offre pas de TLS.
+llm-claude = []
 
 [dependencies]
 forge-core = { git = "https://github.com/CHECKUPAUTO/forge", optional = true }
