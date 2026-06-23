@@ -56,11 +56,17 @@ impl Json {
     }
 
     pub fn as_u64(&self) -> Option<u64> {
-        self.as_f64().map(|n| n as u64)
+        // Rejette NaN, ±∞ et négatifs au lieu de saturer silencieusement à 0
+        // (`-1.0 as u64 == 0`, `NaN as u64 == 0`).
+        self.as_f64()
+            .filter(|n| n.is_finite() && *n >= 0.0)
+            .map(|n| n as u64)
     }
 
     pub fn as_usize(&self) -> Option<usize> {
-        self.as_f64().map(|n| n as usize)
+        self.as_f64()
+            .filter(|n| n.is_finite() && *n >= 0.0)
+            .map(|n| n as usize)
     }
 
     pub fn as_bool(&self) -> Option<bool> {
@@ -194,6 +200,16 @@ impl Parser {
         c
     }
 
+    /// Lit exactement 4 chiffres hexadécimaux (corps d'un échappement `\u`).
+    fn read_hex4(&mut self) -> Result<u32, String> {
+        let mut code = 0u32;
+        for _ in 0..4 {
+            let h = self.next().ok_or("\\u tronqué")?;
+            code = code * 16 + h.to_digit(16).ok_or("hex invalide dans \\u")?;
+        }
+        Ok(code)
+    }
+
     fn skip_ws(&mut self) {
         while let Some(c) = self.peek() {
             if c.is_whitespace() {
@@ -292,13 +308,28 @@ impl Parser {
                         'b' => s.push('\u{0008}'),
                         'f' => s.push('\u{000C}'),
                         'u' => {
-                            let mut code = 0u32;
-                            for _ in 0..4 {
-                                let h = self.next().ok_or("\\u tronqué")?;
-                                code = code * 16
-                                    + h.to_digit(16).ok_or("hex invalide dans \\u")?;
-                            }
-                            s.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
+                            let code = self.read_hex4()?;
+                            // Paires de surrogates UTF-16 (RFC 8259) : un caractère
+                            // hors BMP est encodé `\uD800-DBFF` suivi de
+                            // `\uDC00-DFFF`. On les recombine en un scalaire unique.
+                            let ch = if (0xD800..=0xDBFF).contains(&code) {
+                                if self.next() != Some('\\') || self.next() != Some('u') {
+                                    return Err("surrogate haut non suivi de \\u".into());
+                                }
+                                let low = self.read_hex4()?;
+                                if !(0xDC00..=0xDFFF).contains(&low) {
+                                    return Err("surrogate bas invalide".into());
+                                }
+                                let combined =
+                                    0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                                char::from_u32(combined).unwrap_or('\u{FFFD}')
+                            } else if (0xDC00..=0xDFFF).contains(&code) {
+                                // surrogate bas isolé : séquence invalide.
+                                '\u{FFFD}'
+                            } else {
+                                char::from_u32(code).unwrap_or('\u{FFFD}')
+                            };
+                            s.push(ch);
                         }
                         other => return Err(format!("échappement inconnu \\{other}")),
                     }
@@ -399,5 +430,63 @@ mod tests {
     fn accepts_reasonable_nesting() {
         let ok = format!("{}{}", "[".repeat(64), "]".repeat(64));
         assert!(Json::parse(&ok).is_ok());
+    }
+
+    #[test]
+    fn parses_utf16_surrogate_pairs() {
+        // 😀 U+1F600 encodé en paire de surrogates (RFC 8259)
+        let v = Json::parse(r#""😀""#).unwrap();
+        assert_eq!(v, Json::Str("😀".to_string()));
+        // roundtrip : notre sérialiseur émet l'UTF-8 brut (valide), reparsable
+        let back = Json::parse(&v.to_string()).unwrap();
+        assert_eq!(back, v);
+        // BMP normal toujours décodé
+        assert_eq!(Json::parse(r#""é""#).unwrap(), Json::Str("é".to_string()));
+        // surrogate haut non suivi d'un bas ⇒ erreur propre (pas de panic)
+        assert!(Json::parse(r#""\uD83D""#).is_err());
+        assert!(Json::parse(r#""\uD83Dx""#).is_err());
+    }
+
+    #[test]
+    fn parse_never_panics_on_random_input() {
+        // Mini-fuzz *in-tree* (RNG déterministe, zéro dépendance) : `Json::parse`
+        // ne doit JAMAIS paniquer, quelle que soit l'entrée. On échantillonne dans
+        // un alphabet riche en caractères structurellement signifiants.
+        use crate::rng::Rng;
+        const ALPHABET: &[char] = &[
+            '{', '}', '[', ']', ':', ',', '"', '\\', '/', 'u', 'n', 't', 'f', 'e', 'E',
+            '+', '-', '.', '0', '1', '9', ' ', '\n', '\t', 'a', 'z', 'é', '😀', '\u{0}',
+        ];
+        let mut rng = Rng::new(0x5EED);
+        for _ in 0..10_000 {
+            let len = rng.uniform_range(0.0, 48.0) as usize;
+            let s: String = (0..len)
+                .map(|_| ALPHABET[(rng.uniform_range(0.0, ALPHABET.len() as f64)) as usize])
+                .collect();
+            // le seul contrat : pas de panic. Ok ou Err, peu importe.
+            let _ = Json::parse(&s);
+        }
+        // quelques motifs adversariaux ciblés
+        let deep = "[".repeat(200);
+        for pat in [
+            "\"\\u", "\"\\uD83D", deep.as_str(), "{\"a\":", "\"\\", "1e", "-", "1.e9",
+            "\"\\uZZZZ\"",
+        ] {
+            let _ = Json::parse(pat);
+        }
+    }
+
+    #[test]
+    fn unsigned_accessors_reject_negative_and_nan() {
+        // valeurs valides : conversion normale
+        assert_eq!(Json::Num(5.0).as_u64(), Some(5));
+        assert_eq!(Json::Num(5.9).as_usize(), Some(5));
+        assert_eq!(Json::Num(0.0).as_u64(), Some(0));
+        // négatifs : None au lieu de saturer silencieusement à 0
+        assert_eq!(Json::Num(-1.0).as_u64(), None);
+        assert_eq!(Json::Num(-5.0).as_usize(), None);
+        // non-finis : None
+        assert_eq!(Json::Num(f64::NAN).as_u64(), None);
+        assert_eq!(Json::Num(f64::INFINITY).as_usize(), None);
     }
 }

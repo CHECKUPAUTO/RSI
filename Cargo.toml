@@ -3,8 +3,18 @@ name = "rsi"
 version = "0.10.0"
 edition = "2021"
 description = "Recursive Self-Improvement — implémentation Rust du système géométrique unifié (v9)"
-license = "PolyForm-Noncommercial-1.0.0"
+# Double licence (cf. LICENSING.md) : gratuit en usage non commercial sous
+# PolyForm-Noncommercial-1.0.0, licence commerciale séparée sinon. L'expression
+# SPDX « A OR B » reflète le choix laissé à l'utilisateur (LicenseRef pour la
+# licence commerciale, hors liste SPDX standard).
+license = "PolyForm-Noncommercial-1.0.0 OR LicenseRef-Commercial"
 authors = ["Tarek Zekriti / CHECKUPAUTO"]
+repository = "https://github.com/CHECKUPAUTO/RSI"
+homepage = "https://github.com/CHECKUPAUTO/RSI"
+documentation = "https://github.com/CHECKUPAUTO/RSI/tree/main/docs"
+readme = "README.md"
+keywords = ["rsi", "self-improvement", "optimization", "agent", "llm"]
+categories = ["science", "simulation"]
 
 [[bin]]
 name = "rsi-full"
@@ -24,10 +34,32 @@ forge = ["dep:forge-core", "dep:rand", "dep:serde"]
 octasoma = ["dep:octasoma"]
 # Audit/déterminisme adossé à l'EventLog hash-chaîné de CCOS.
 ccos = ["dep:ccos"]
-# Moteur d'ascension réel `scirust-rsi`, vendorisé en dépendance `path`
-# (vendor/scirust-rsi) — reconstruction API-compatible, hors-ligne, ne tirant
-# que `rand`. Voir SCIRUST_ACTIVATION.md. Activer avec : --features scirust.
+# Moteur d'ascension réel `scirust-rsi` (dépendance git CHECKUPAUTO/scirust).
+# Voir SCIRUST_ACTIVATION.md. Activer avec : --features scirust.
 scirust = ["dep:scirust-rsi", "dep:rand"]
+# Backend LLM local Ollama (client HTTP minimal sur std::net, sans dépendance).
+# Active OllamaClient pour brancher un modèle local (http://localhost:11434).
+llm-ollama = []
+# Backend LLM Claude (API Anthropic Messages). std-only : la logique (requête /
+# parsing) est sans dépendance ; le transport HTTPS/TLS est injecté par l'hôte
+# (trait ClaudeTransport), car std n'offre pas de TLS.
+llm-claude = []
+# Transport HTTPS turnkey pour Claude via `ureq` (bloquant, rustls). Fournit
+# UreqTransport prêt à l'emploi. Nécessite le réseau (api.anthropic.com).
+llm-claude-ureq = ["llm-claude", "dep:ureq"]
+# Domaine WASM : exécution RÉELLE de code candidat en bac à sable (wasmi, pur
+# Rust, déterministe, avec fuel + zéro import host). 4e point du spectre
+# texte→config→code. Le LLM propose du WebAssembly textuel (WAT).
+wasm = ["dep:wasmi", "dep:wat"]
+# Observabilité : émission d'événements structurés via `tracing` (l'hôte attache
+# son subscriber). Sans la feature, les points d'instrumentation sont des no-ops
+# (le cœur reste std-only). Les métriques Prometheus (commande `metrics`) sont,
+# elles, toujours disponibles et sans dépendance.
+observability = ["dep:tracing"]
+# SIMD : vectorise les réductions linalg (dot/mean) via `wide` (stable, sûr).
+# ⚠️ Relâche la repro BIT-EXACTE *cross-build* (l'ordre de sommation change) ;
+# le déterminisme reste intact À L'INTÉRIEUR d'un build SIMD. OFF par défaut.
+simd = ["dep:wide"]
 
 [dependencies]
 forge-core = { git = "https://github.com/CHECKUPAUTO/forge", optional = true }
@@ -35,7 +67,12 @@ octasoma = { git = "https://github.com/CHECKUPAUTO/octasoma", optional = true }
 ccos = { git = "https://github.com/CHECKUPAUTO/CCOS", optional = true }
 rand = { version = "0.8", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
-scirust-rsi = { path = "vendor/scirust-rsi", optional = true }
+scirust-rsi = { git = "https://github.com/CHECKUPAUTO/scirust", optional = true }
+ureq = { version = "2", optional = true }
+wasmi = { version = "0.31", optional = true }
+wat = { version = "1", optional = true }
+tracing = { version = "0.1", optional = true }
+wide = { version = "0.7", optional = true }
 
 [[bin]]
 name = "rsi-demo"
@@ -56,6 +93,10 @@ path = "src/bin/rsi_ablate.rs"
 [[bin]]
 name = "rsi-loopbench"
 path = "src/bin/rsi_loopbench.rs"
+
+[[bin]]
+name = "rsi-refine"
+path = "src/bin/rsi_refine.rs"
 
 [profile.release]
 opt-level = 3

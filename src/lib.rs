@@ -51,6 +51,9 @@ pub mod checkpoint;
 pub mod cma;
 pub mod convergence;
 pub mod criticality;
+// Boucle d'auto-amélioration empirique (Darwin–Gödel / STOP) — port std-only de
+// `soul-rsi` : propose un patch → build+test en copie isolée → garde si meilleur.
+pub mod dgm;
 pub mod loop_ctrl;
 #[cfg(feature = "forge")]
 pub mod forge_meta;
@@ -60,10 +63,13 @@ pub mod dynamics;
 pub mod json;
 pub mod knowledge;
 pub mod linalg;
+pub mod llm;
 pub mod measured_substrate;
 pub mod memory;
 pub mod meta;
+pub mod obs;
 pub mod plot;
+pub mod prompt;
 pub mod tasks;
 #[cfg(feature = "octasoma")]
 pub mod octasoma_memory;
@@ -78,6 +84,9 @@ pub mod substrate;
 pub mod surface;
 pub mod swarm;
 pub mod synthesis;
+pub mod tuning;
+#[cfg(feature = "wasm")]
+pub mod wasm_domain;
 
 pub use agent::{RSIAgent, StepReport};
 pub use api::{ApiResult, RsiApi};

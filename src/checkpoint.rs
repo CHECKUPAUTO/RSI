@@ -17,7 +17,7 @@ use crate::agent::RSIAgent;
 use crate::json::Json;
 use crate::linalg::Matrix;
 use crate::meta::MetaStrategy;
-use crate::state::{CognitiveState, Dims};
+use crate::state::CognitiveState;
 use crate::substrate::Substrate;
 
 /// Instantané reprenable de l'état macro d'un agent.
@@ -245,6 +245,49 @@ impl RSIAgent {
         self.t = cp.t;
         Ok(())
     }
+
+    /// Restaure **en validant** la cohérence dimensionnelle du checkpoint avec
+    /// l'agent courant (surface/substrat). Renvoie `Err` au lieu de laisser un
+    /// checkpoint incohérent provoquer un panic différé (p. ex. indexation hors
+    /// borne dans `si_global`). À préférer pour tout checkpoint *désérialisé*
+    /// (`from_json` / `load`) ; `restore` reste le chemin direct pour le rollback
+    /// d'un snapshot pris sur le *même* agent (dimensions garanties identiques).
+    pub fn try_restore(&mut self, cp: &Checkpoint) -> Result<(), String> {
+        let want = [
+            self.state.d.len(),
+            self.state.m.len(),
+            self.state.r.len(),
+            self.state.a.len(),
+            self.state.c.len(),
+            self.state.v.len(),
+        ];
+        let got = [
+            cp.state.d.len(),
+            cp.state.m.len(),
+            cp.state.r.len(),
+            cp.state.a.len(),
+            cp.state.c.len(),
+            cp.state.v.len(),
+        ];
+        if got != want {
+            return Err(format!(
+                "dimensions d'état du checkpoint {got:?} incohérentes avec l'agent {want:?}"
+            ));
+        }
+        if cp.substrate.h.len() != self.substrate.h.len()
+            || cp.substrate.o.len() != self.substrate.o.len()
+        {
+            return Err(format!(
+                "dimensions substrat du checkpoint (h={}, o={}) incohérentes avec l'agent (h={}, o={})",
+                cp.substrate.h.len(),
+                cp.substrate.o.len(),
+                self.substrate.h.len(),
+                self.substrate.o.len()
+            ));
+        }
+        self.restore(cp);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -295,5 +338,30 @@ mod tests {
         assert!((resumed.si_global() - si_mid).abs() < 1e-9);
         resumed.run(30);
         assert!(resumed.si_global() >= si_mid);
+    }
+
+    #[test]
+    fn try_restore_rejects_mismatched_dims() {
+        let mut agent = RSIAgent::demo(2026);
+        agent.run(5);
+        // checkpoint cohérent : accepté
+        let good = agent.snapshot();
+        assert!(agent.try_restore(&good).is_ok());
+        // checkpoint corrompu (composante d'état tronquée) : refusé proprement
+        // au lieu de provoquer un panic différé dans `si_global`.
+        let mut bad = agent.snapshot();
+        bad.state.d.pop();
+        let err = agent.try_restore(&bad).unwrap_err();
+        assert!(err.contains("dimensions"), "msg = {err}");
+    }
+
+    #[test]
+    fn from_json_rejects_empty_state_component() {
+        let mut agent = RSIAgent::demo(1);
+        agent.run(3);
+        let mut cp = agent.snapshot();
+        cp.state.r.clear();
+        let err = Checkpoint::from_json(&cp.to_json()).unwrap_err();
+        assert!(err.contains("vide"), "msg = {err}");
     }
 }

@@ -15,11 +15,37 @@ pub fn sigmoid(x: f64) -> f64 {
     }
 }
 
-/// Produit scalaire de deux vecteurs de même longueur.
+/// Produit scalaire de deux vecteurs de même longueur (scalaire, ordre G→D).
+#[cfg(not(feature = "simd"))]
 #[inline]
 pub fn dot(a: &[f64], b: &[f64]) -> f64 {
     debug_assert_eq!(a.len(), b.len());
     a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+/// Produit scalaire **vectorisé** (`wide::f64x4`, feature `simd`) : réduction par
+/// 4 voies puis combinaison à ordre fixe — déterministe dans un build SIMD, mais
+/// numériquement distinct du scalaire (l'ordre de sommation diffère).
+#[cfg(feature = "simd")]
+#[inline]
+pub fn dot(a: &[f64], b: &[f64]) -> f64 {
+    debug_assert_eq!(a.len(), b.len());
+    use wide::f64x4;
+    let n = a.len().min(b.len());
+    let lanes = n / 4;
+    let mut acc = f64x4::splat(0.0);
+    for i in 0..lanes {
+        let base = i * 4;
+        let va = f64x4::from([a[base], a[base + 1], a[base + 2], a[base + 3]]);
+        let vb = f64x4::from([b[base], b[base + 1], b[base + 2], b[base + 3]]);
+        acc += va * vb;
+    }
+    let [s0, s1, s2, s3] = acc.to_array();
+    let mut sum = s0 + s1 + s2 + s3;
+    for i in (lanes * 4)..n {
+        sum += a[i] * b[i];
+    }
+    sum
 }
 
 /// Norme euclidienne ‖v‖.
@@ -28,7 +54,8 @@ pub fn norm(v: &[f64]) -> f64 {
     dot(v, v).sqrt()
 }
 
-/// Moyenne des éléments (0.0 si vide).
+/// Moyenne des éléments (0.0 si vide) — scalaire.
+#[cfg(not(feature = "simd"))]
 #[inline]
 pub fn mean(v: &[f64]) -> f64 {
     if v.is_empty() {
@@ -36,6 +63,29 @@ pub fn mean(v: &[f64]) -> f64 {
     } else {
         v.iter().sum::<f64>() / v.len() as f64
     }
+}
+
+/// Moyenne des éléments **vectorisée** (`wide::f64x4`, feature `simd`).
+#[cfg(feature = "simd")]
+#[inline]
+pub fn mean(v: &[f64]) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    use wide::f64x4;
+    let n = v.len();
+    let lanes = n / 4;
+    let mut acc = f64x4::splat(0.0);
+    for i in 0..lanes {
+        let base = i * 4;
+        acc += f64x4::from([v[base], v[base + 1], v[base + 2], v[base + 3]]);
+    }
+    let [s0, s1, s2, s3] = acc.to_array();
+    let mut sum = s0 + s1 + s2 + s3;
+    for i in (lanes * 4)..n {
+        sum += v[i];
+    }
+    sum / n as f64
 }
 
 /// Matrice dense en ligne-major.

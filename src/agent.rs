@@ -266,6 +266,8 @@ impl RSIAgent {
     /// Un pas de la boucle discrète RSI (avec criticité §7 et optimisations A/C/D).
     pub fn step(&mut self) -> StepReport {
         let si_before = self.si_global();
+        // État de début de pas (référence du garde-fou de non-régression combiné).
+        let state_before = self.state.clone();
 
         // §2bis — ingestion de connaissances réelles : fait tendre D vers le
         // niveau appris (la hausse de D nourrit ensuite L(D) dans la dynamique).
@@ -521,6 +523,24 @@ mod tests {
     }
 
     #[test]
+    fn combined_step_non_regression_when_no_override() {
+        // §4bis — hors override de sûreté (mitigation == "none"), le PAS COMBINÉ
+        // (ℳ + apprentissage) respecte SI(t+1) ≥ SI(t) − ε. (demo : ε non adaptatif.)
+        let mut agent = RSIAgent::demo(2026);
+        let eps = agent.dynamics_cfg.epsilon;
+        for r in agent.run(60) {
+            if r.mitigation == "none" {
+                assert!(
+                    r.delta_si >= -eps - 1e-9,
+                    "régression combinée non protégée: ΔSI={} (mitigation={})",
+                    r.delta_si,
+                    r.mitigation
+                );
+            }
+        }
+    }
+
+    #[test]
     fn agent_improves_over_time() {
         let mut agent = RSIAgent::demo(7);
         let start = agent.si_global();
@@ -675,5 +695,35 @@ mod tests {
         };
         // même graine + même trajectoire ⇒ même hash de tête (reproductibilité)
         assert_eq!(run(), run());
+    }
+
+    /// Property-based test *in-tree* : sur un large balayage de graines, chaque
+    /// `StepReport` respecte les bornes de cohérence du modèle. Cible : 0 échec.
+    #[test]
+    fn report_invariants_hold_over_many_seeds() {
+        use crate::rng::Rng;
+        let mut agent_seed = Rng::new(2026);
+        for _ in 0..250 {
+            let seed = (agent_seed.uniform_range(0.0, 1e9) as u64).wrapping_add(1);
+            let mut agent = RSIAgent::demo(seed);
+            let lam = agent.dynamics_cfg.lambda;
+            let eps = agent.dynamics_cfg.epsilon;
+            for r in agent.run(25) {
+                assert!(r.appr.delta_norm <= lam + 1e-9, "‖ΔS‖={} > λ", r.appr.delta_norm);
+                assert!((0.0..=1.0).contains(&r.si_global), "SI_global={}", r.si_global);
+                assert!(r.p_eff > 0.0 && r.p_eff < 1.0, "P_eff={}", r.p_eff);
+                assert!((0.0..=1.0).contains(&r.risk_global), "risk_global={}", r.risk_global);
+                assert!((0.0..=1.0).contains(&r.max_rpn), "max_rpn={}", r.max_rpn);
+                assert!(
+                    r.capabilities.iter().all(|c| (0.0..=1.0).contains(c)),
+                    "capabilities hors [0,1]: {:?}",
+                    r.capabilities
+                );
+                // non-régression du pas combiné hors override de sûreté
+                if r.mitigation == "none" {
+                    assert!(r.delta_si >= -eps - 1e-9, "ΔSI={} < −ε", r.delta_si);
+                }
+            }
+        }
     }
 }

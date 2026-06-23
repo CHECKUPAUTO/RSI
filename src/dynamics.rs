@@ -235,4 +235,55 @@ mod tests {
             state = next;
         }
     }
+
+    /// Property-based test *in-tree* (RNG déterministe, std-only) : les deux
+    /// garde-fous de `constrained_step` — amplitude `‖ΔS‖ ≤ λ` et non-régression
+    /// `SI(t+1) ≥ SI(t) − ε` — tiennent sur un large espace de surfaces, états,
+    /// substrats et CONFIGS EXTRÊMES (λ→0, ε→0, η₀ grand). Cible : 0 échec.
+    #[test]
+    fn guardrails_hold_under_random_extreme_configs() {
+        let mut rng = Rng::new(0xDEAD_BEEF);
+        for _ in 0..1_200 {
+            // config extrême (ε non adaptatif ⇒ tolérance exacte = epsilon)
+            let cfg = StabilityConfig {
+                lambda: rng.uniform_range(1e-3, 1.0),
+                epsilon: rng.uniform_range(0.0, 0.05),
+                eta0: rng.uniform_range(0.01, 3.0),
+                forgetting: rng.uniform_range(0.0, 0.1),
+                adaptive_epsilon: false,
+                epsilon_z: 2.0,
+            };
+            let n = 1 + (rng.uniform_range(0.0, 8.0) as usize); // dims 1..=8
+            let surf = IntelligenceSurface::sample(48, &mut rng);
+            let dyn_ = Dynamics::new(&surf, cfg);
+            // État clippé dans [0,1]ⁿ : domaine opérationnel réel du moteur (qui
+            // clippe à chaque pas). L'invariant d'amplitude repose sur la
+            // non-expansivité de la projection, valable seulement dans ce domaine.
+            let mut state = CognitiveState::random(Dims::uniform(n), &mut rng, 0.5).clipped(0.0, 1.0);
+            let sub = Substrate::default_with(n, n, &mut rng);
+
+            for _ in 0..12 {
+                let (next, info) = dyn_.constrained_step(&state, &sub, 1.0);
+                assert!(
+                    info.delta_norm <= cfg.lambda + 1e-9,
+                    "‖ΔS‖={} > λ={}",
+                    info.delta_norm,
+                    cfg.lambda
+                );
+                assert!(
+                    info.si_after >= info.si_before - cfg.epsilon - 1e-9,
+                    "régression {} < {} − ε({})",
+                    info.si_after,
+                    info.si_before,
+                    cfg.epsilon
+                );
+                // bornes de cohérence Monte-Carlo
+                let si = surf.si_global(&next, &sub);
+                assert!((0.0..=1.0).contains(&si), "SI_global={si} hors [0,1]");
+                let p = sub.effective_power();
+                assert!(p > 0.0 && p < 1.0, "P_eff={p} hors (0,1)");
+                state = next;
+            }
+        }
+    }
 }

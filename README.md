@@ -35,6 +35,29 @@ agents. Au prochain démarrage, ils disposent des outils `rsi_*` (`rsi_create`,
 > Pas d'agent sous la main ? Teste le moteur directement :
 > `cargo run --release --bin rsi-demo`
 
+### Conteneur / build reproductible
+
+Le **cœur** (features par défaut) est *std-only* et **sans dépendance externe** :
+il se package en binaires statiques sans accès réseau.
+
+```bash
+# Image Docker minimale (build musl statique → image `scratch`)
+docker build -t rsi:latest .
+docker run --rm -i rsi:latest          # serveur MCP (stdio)
+docker run --rm --entrypoint /usr/local/bin/rsi-demo rsi:latest
+
+# Build reproductible via Nix (flake)
+nix build               # → ./result/bin/{rsi-mcp,rsi-demo,…}
+nix run                 # lance rsi-mcp
+nix develop             # shell outillé (cargo, clippy, rustfmt)
+```
+
+> **Distribution.** RSI dépend de 4 crates git privées (forge/octasoma/ccos/
+> scirust) **optionnelles** : il n'est donc **pas publié sur crates.io** (le
+> registre exige une version pour toute dépendance). La distribution se fait par
+> **source + Docker/Nix** ci-dessus. `rsi-full` (features git) sort de ce
+> périmètre hors-ligne.
+
 ## Correspondance équations ↔ code
 
 | Section | Équation | Module |
@@ -45,6 +68,13 @@ agents. Au prochain démarrage, ils disposent des outils `rsi_*` (`rsi_create`,
 | **§4** Dynamique + stabilité | `dS/dt=η·[L+E+U]−P`, `‖ΔS‖<λ`, `SI(t+1)≥SI(t)−ε` | [`src/dynamics.rs`](src/dynamics.rs) |
 | **§5** Boucle discrète + méta | `S_{t+1}=S_t+ℳ(…)+ΔS_appr`, `ℳ_{t+1}=argmax_ℳ SI_global(ℳ(S_t))` | [`src/meta.rs`](src/meta.rs) |
 | **§6** Forme compacte (onde) | `Σ_I(t+1)=Σ_I(t)+η·ℳ−P` | [`src/agent.rs`](src/agent.rs) |
+
+> **Portée de l'invariant de non-régression.** `SI(t+1) ≥ SI(t) − ε` est garanti
+> par line search sur le **pas combiné** (méta ℳ + apprentissage ΔS_appr), *sauf*
+> lorsqu'un **override de sûreté explicite** se déclenche (p. ex. `trust_floor`
+> anti-wireheading, qui abaisse délibérément `P_eff`) : dans ce cas la régression
+> est assumée au nom de la sûreté. Hors override, l'invariant est appliqué activement
+> (cf. `RSIAgent::step`, §4bis), pas seulement émergent.
 
 ## Modèle
 
@@ -132,6 +162,17 @@ Chaque [`StepReport`](src/agent.rs) expose :
 - **Export CSV / JSON** de la trajectoire (`report.rs`, flags `--csv`/`--json`).
 - **API** orientée commandes JSON (`api.rs`, `RsiApi`).
 - **Serveur MCP** (`rsi-mcp`) pour piloter le système depuis un agent IA / LLM.
+- **Moteur d'auto-amélioration piloté par LLM** (`llm.rs`, `ascent.rs`) — « le
+  LLM propose, le moteur dispose » : le LLM ne produit que du texte, le moteur
+  parse, valide (`safety_check`), évalue en sandbox et **adopte élitistement**
+  (strictement meilleur ET sûr), sous garde-fous bornés (`LlmGuard` : budget,
+  anti-overfitting). Backends interchangeables : **Ollama** local (défaut),
+  **Claude** (transport injecté), mock déterministe. Trois domaines : synthèse
+  symbolique, configuration (JSON), prompts (rejet d'injection). Pilotable en
+  **autonome** (`ascend_llm`), via **MCP** (`rsi_refine_new`/`incumbent`/
+  `evaluate`/`propose`, multi-domaine, checkpoint/resume) ou en **CLI**
+  (`rsi-refine`). Voir [`docs/LLM_INTEGRATION.md`](docs/LLM_INTEGRATION.md) et
+  [`docs/SAFETY.md`](docs/SAFETY.md).
 - **Auto-connexion** (`rsi-connect` + `scripts/auto-connect.sh`) aux runtimes
   d'agents (openclaw, hermes-agent, …) sans intervention humaine.
 - **Backends réels** (features optionnelles, cœur sans dépendance par défaut) —
@@ -204,6 +245,17 @@ cargo build --release --bins
 Voir le guide complet : [`docs/INTEGRATION.md`](docs/INTEGRATION.md)
 (API, outils MCP, schémas, boucle d'auto-amélioration côté LLM, auto-connexion).
 
+**Brancher un LLM sur le moteur d'ascension** (Ollama local / Claude, boucle
+autonome ou interactive via MCP, sous garde-fous) :
+[`docs/LLM_INTEGRATION.md`](docs/LLM_INTEGRATION.md).
+
+**Garde-fous, garanties et limites** (ce qui est garanti vs hypothèse de
+modèle) : [`docs/SAFETY.md`](docs/SAFETY.md).
+
+**Recréer l'environnement Claude Code on the web** (accès réseau « Trusted »,
+variables, setup script, déblocage du transport TLS Claude) :
+[`docs/WEB_ENV.md`](docs/WEB_ENV.md).
+
 ### Paper scientifique
 
 Formalisation, implémentation et résultats expérimentaux :
@@ -251,14 +303,45 @@ stabilise (patience), 100 % des cas de test réussis, `is_monotone() == true`.
 >   et pilote la boucle avec `SelfRefiner::new(seed).run(&task, &Guard)`,
 >   conformément à `scirust-rsi/INTEGRATION.md`.
 >
-> Le moteur réel est **vendorisé** dans [`vendor/scirust-rsi`](vendor/scirust-rsi)
-> (dépendance `path`, hors-ligne, ne tire que `rand`) — c'est une reconstruction
-> API-compatible de l'API publiée, le dépôt `CHECKUPAUTO/scirust` n'étant pas
-> joignable depuis cet environnement (une git-dependency injoignable casse la
-> résolution du lockfile, même en `optional`). Il s'active directement :
-> `cargo run --features scirust --release --example self_improve_real`. Pour
-> repasser à l'amont (git-dependency / installeur vendorisé), voir
+> Le moteur réel est consommé en **dépendance git amont**
+> (`scirust-rsi = { git = "https://github.com/CHECKUPAUTO/scirust" }`) — validé
+> de bout en bout : `cargo test --features scirust` compile le vrai crate et
+> passe les 131 tests sans modifier le bridge. Activation (réseau requis) :
+> `cargo run --features scirust --release --example self_improve_real`. Détails :
 > [`SCIRUST_ACTIVATION.md`](SCIRUST_ACTIVATION.md).
+
+## Auto-amélioration **empirique** du code (Darwin–Gödel / STOP)
+
+Là où l'agent ci-dessus améliore des objets abstraits (expressions, configs,
+prompts) que le moteur *interprète*, le module [`src/dgm.rs`](src/dgm.rs) ajoute
+la variante **empirique sur du code source réel** — port natif **std-only** du
+crate [`soul-rsi`](https://github.com/CHECKUPAUTO/soul-rsi) :
+
+> propose un patch `find → replace` ▸ l'évalue dans une **copie isolée** du dépôt
+> (`cargo build` + `cargo test`) ▸ ne le **garde que s'il est prouvé meilleur**
+> (compile ▸ non-régression de tests ▸ score) ▸ l'**archive** comme tremplin
+> réutilisable ▸ recommence.
+
+```bash
+cargo run --release --example dgm_selfimprove   # boucle jouet, déterministe, hors-ligne
+```
+
+- **STOP** (Zelikman 2023) : le proposeur est interchangeable
+  ([`Proposer`]) ; [`LlmProposer`] le branche sur n'importe quel backend RSI via
+  [`LlmCodeModel`] (Ollama, Claude…). La boucle ne fait **jamais** confiance à
+  l'auto-évaluation du modèle.
+- **Darwin Gödel Machine** (Zhang 2025) : [`Archive`] ouverte, sélection de
+  parent qualité × nouveauté, acceptation **empirique**.
+- **Reflexion** (Shinn 2023) : les rejets récents sont re-injectés au proposeur.
+
+**Sûreté** (cf. [`docs/SAFETY.md`](docs/SAFETY.md) §5bis) : liste blanche de
+fichiers éditables, patch exact **non ambigu** (motif unique), snapshot jetable,
+sous-processus `cargo` **bornés** (timeout + sortie plafonnée), et l'arbre vivant
+n'est mué que par [`promote_to_live`] (gardé tout-au-vert, sauvegarde réversible).
+IDs de variantes déterministes (hash de lignée) ⇒ archive **reproductible**.
+⚠️ `CargoEvaluator` exécute du code réel : à n'utiliser que sur du **code de
+confiance** (ce n'est pas un bac à sable syscall ; pour du code non fiable,
+préférer le domaine WASM).
 
 ## Architecture
 
@@ -274,6 +357,7 @@ src/
 ├── meta.rs         §5  ℳ, trait MetaSearch, recherche aléatoire + CMA-ES
 ├── cma.rs          §5  sep-CMA-ES (covariance diagonale)
 ├── agent.rs        §5/§6  boucle discrète complète
+├── dgm.rs          auto-amélioration empirique du code (Darwin–Gödel/STOP, port soul-rsi)
 ├── json.rs         (dé)sérialisation JSON std-only
 ├── report.rs       export CSV / JSON de la trajectoire
 ├── api.rs          façade RsiApi (commandes JSON in/out)

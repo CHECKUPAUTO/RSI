@@ -15,7 +15,7 @@
 //! Lancement : `cargo run --release --bin rsi-mcp` puis dialogue JSON-RPC
 //! ligne par ligne sur stdin/stdout.
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 
 use rsi::api::RsiApi;
 use rsi::json::Json;
@@ -31,6 +31,7 @@ fn main() {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = stdout.lock();
+    let mut reader = stdin.lock();
     let mut api = RsiApi::new();
 
     // Lecture byte-à-byte bornée : on accumule la ligne jusqu'à newline ou
@@ -47,11 +48,22 @@ fn main() {
             }
             Err(LineError::Io) => break,
         };
-        if line.trim().is_empty() {
+        // Limite atteinte sans fin de ligne ⇒ requête trop grande : on refuse et
+        // on coupe proprement (drainer le reste risquerait l'OOM qu'on évite).
+        if n >= MAX_LINE_BYTES && buf.last() != Some(&b'\n') {
+            let resp = error_response(&Json::Null, -32600, "request line exceeds 16 MiB limit");
+            let _ = writeln!(out, "{}", resp.to_string());
+            let _ = out.flush();
+            break;
+        }
+
+        let line = String::from_utf8_lossy(&buf);
+        let line = line.trim();
+        if line.is_empty() {
             continue;
         }
 
-        let response = match Json::parse(&line) {
+        let response = match Json::parse(line) {
             Ok(req) => handle_request(&mut api, &req),
             Err(e) => Some(error_response(&Json::Null, -32700, &format!("parse error: {e}"))),
         };
@@ -252,6 +264,83 @@ fn tools_list() -> Json {
         ),
         tool("rsi_reset", "Réinitialise la session à partir de sa configuration.", props(&[id()]), &[]),
         tool("rsi_list_sessions", "Liste les sessions actives.", Json::obj(), &[]),
+        tool(
+            "rsi_health",
+            "Santé du serveur : nombre de sessions, pas cumulés, intégrité de l'audit \
+             hash-chaîné (audit_intact), activité de raffinement.",
+            Json::obj(),
+            &[],
+        ),
+        tool(
+            "rsi_metrics",
+            "Métriques au format d'exposition Prometheus (texte, scrapeable) : sessions, \
+             pas cumulés, intégrité de l'audit, propositions vues/adoptées.",
+            Json::obj(),
+            &[],
+        ),
+        tool(
+            "rsi_refine_new",
+            "Crée une session de raffinement piloté par LLM. Le LLM propose des candidats (texte) ; \
+             le serveur les évalue en sandbox et n'adopte que les strictement meilleurs et sûrs — \
+             le LLM ne contrôle aucun garde-fou. Deux domaines : 'synthesis' (expressions \
+             arithmétiques), 'tuning' (hyperparamètres JSON) et 'prompt' (prompt texte).",
+            props(&[
+                id(),
+                ("domain", prop("string", "Domaine: 'synthesis' (défaut), 'tuning' ou 'prompt'.")),
+                ("target", prop("string", "[synthesis] cible: 'quadratic' (x²+1), 'linear' (2x-1), 'cubic' (x³-x).")),
+                ("lo", prop("number", "[synthesis] borne basse d'échantillonnage (défaut -3).")),
+                ("hi", prop("number", "[synthesis] borne haute (défaut 3).")),
+                ("n", prop("integer", "[synthesis] nombre de points (défaut 30 ; ~30% en held-out).")),
+                ("seed", prop("integer", "[synthesis] graine reproductible (défaut 2026).")),
+            ]),
+            &[],
+        ),
+        tool(
+            "rsi_incumbent",
+            "Renvoie l'incumbent courant d'une session de raffinement : expression, score \
+             (fraction de cas réussis), score held-out (généralisation), taille, compteurs.",
+            props(&[id()]),
+            &[],
+        ),
+        tool(
+            "rsi_evaluate",
+            "Évalue un candidat SANS l'adopter (sonde pour le raisonnement). Renvoie score, \
+             held-out, sûreté et s'il serait adopté. N'altère pas l'incumbent.",
+            props(&[
+                id(),
+                ("candidate", prop("string", "Candidat texte. synthesis: expression sur x (ex: 'x*x + 1'). tuning: config JSON (ex: '{\"top_k\":50,\"chunk\":1024,\"threshold\":0.4}').")),
+            ]),
+            &["candidate"],
+        ),
+        tool(
+            "rsi_propose",
+            "Soumet une ou plusieurs propositions d'expressions. Le serveur parse, vérifie la \
+             sûreté (taille bornée), score, et n'adopte qu'élitistement (strictement meilleur ET \
+             sûr). Renvoie le détail par proposition et le nouvel incumbent.",
+            props(&[
+                id(),
+                ("proposals", prop("array", "Tableau de candidats (chaînes) : expressions (synthesis) ou configs JSON (tuning).")),
+                ("candidate", prop("string", "Alternative: un ou plusieurs candidats, un par ligne.")),
+            ]),
+            &[],
+        ),
+        tool(
+            "rsi_refine_save",
+            "Sérialise l'état d'une session de raffinement (config + incumbent + compteurs) \
+             pour reprise ultérieure. Renvoie un objet 'state' réutilisable par rsi_refine_load.",
+            props(&[id()]),
+            &[],
+        ),
+        tool(
+            "rsi_refine_load",
+            "Reprend une session de raffinement depuis un 'state' produit par rsi_refine_save \
+             (checkpoint/resume d'une optimisation pilotée par LLM).",
+            props(&[
+                id(),
+                ("state", prop("object", "État sérialisé renvoyé par rsi_refine_save.")),
+            ]),
+            &["state"],
+        ),
     ];
 
     let mut out = Json::obj();

@@ -1,0 +1,1623 @@
+//! # Boucle d'auto-amélioration empirique (Darwin–Gödel / STOP)
+//!
+//! Port natif, **std-only et sans dépendance**, du contenu de `soul-rsi`
+//! (`github.com/CHECKUPAUTO/soul-rsi`) dans le moteur RSI. Là où le reste de
+//! RSI fait **proposer du texte** au LLM pour des domaines abstraits (synthèse
+//! d'expressions, configs, prompts, WASM ; cf. [`crate::llm`]), ce module fait
+//! de l'auto-amélioration **empirique de code source réel** :
+//!
+//! 1. on **propose** une édition (`find → replace` exacte sur un fichier) ;
+//! 2. on l'**évalue** dans une **copie isolée** du dépôt (`cargo build`+`test`) ;
+//! 3. on ne la **garde que si elle prouve une amélioration** (la compilation
+//!    domine, puis l'absence de régression de tests, puis le score) ;
+//! 4. on **archive** la variante survivante comme tremplin réutilisable ;
+//! 5. on **recommence**, en branchant depuis n'importe quelle variante gardée.
+//!
+//! ## Correspondance avec la littérature
+//!
+//! - **STOP — Self-Taught Optimizer** (Zelikman et al., 2023) : le *proposeur*
+//!   est une fonction interchangeable ([`Proposer`]). [`LlmProposer`] en est la
+//!   version LLM ; la boucle ne fait **jamais** confiance à l'auto-évaluation
+//!   du modèle.
+//! - **Darwin Gödel Machine** (Zhang et al., 2025) : chaque changement validé
+//!   est gardé comme tremplin dans une [`Archive`] ouverte ; l'acceptation est
+//!   décidée **empiriquement** (build + tests), jamais sur la prétention du
+//!   modèle.
+//! - **Gödel Machine** (Schmidhuber, 2007) : une amélioration n'est appliquée
+//!   qu'après une vérification de bénéfice — ici la barrière build+test de
+//!   [`Fitness`], où un changement qui casse la compilation ne peut jamais
+//!   dominer un qui compile.
+//! - **Reflexion** (Shinn et al., 2023) : les justifications rejetées sont
+//!   re-injectées au proposeur (renforcement verbal bon marché).
+//! - **Open-endedness** (Lehman & Stanley, 2015) : la sélection de parent mêle
+//!   qualité et bonus de nouveauté pour les lignées sous-explorées.
+//!
+//! ## Sûreté
+//!
+//! L'évaluation tourne toujours sur un [`WorkspaceSnapshot`] jetable ; l'arbre
+//! **vivant** n'est touché que par l'appel explicite [`promote_to_live`], gardé
+//! par une évaluation tout-au-vert. Le proposeur LLM est borné par une
+//! **liste blanche** de fichiers éditables. Les sous-processus `cargo` sont
+//! **bornés** (timeout + sortie plafonnée), dans l'esprit de [`crate::knowledge`].
+//!
+//! ## Améliorations vs `soul-rsi`
+//!
+//! - **IDs déterministes** : l'identité d'une variante est un hash SHA-256 de sa
+//!   lignée et de son patch (et non un UUID aléatoire) ⇒ l'archive est
+//!   **bit-exacte reproductible** à graine fixe, cohérent avec le reste de RSI.
+//! - **Horloge logique** : un index de création `seq` remplace l'horodatage mur
+//!   (non déterministe).
+//! - **Sous-processus bornés** : [`CargoEvaluator`] impose timeout + plafond de
+//!   sortie (l'original lançait `cargo` sans borne).
+//!
+//! ## Exemple (boucle déterministe, sans LLM ni `cargo`)
+//!
+//! ```
+//! use rsi::dgm::{Archive, DgmConfig, DgmEngine, ClosureEvaluator, Fitness,
+//!                ImprovementContext, Patch, Proposal, Proposer};
+//! use rsi::rng::Rng;
+//! # use rsi::dgm::Result;
+//! use std::path::Path;
+//!
+//! // Proposeur jouet : incrémente `level = N` dans un fichier texte.
+//! struct Inc;
+//! impl Proposer for Inc {
+//!     fn propose(&self, ctx: &ImprovementContext<'_>, _rng: &mut Rng)
+//!         -> Result<Option<Proposal>> {
+//!         let txt = std::fs::read_to_string(ctx.resolve("level.txt")).unwrap_or_default();
+//!         let cur: i64 = txt.trim().strip_prefix("level = ").and_then(|s| s.parse().ok()).unwrap_or(0);
+//!         Ok(Some(Proposal {
+//!             patch: Patch::new("level.txt", format!("level = {cur}"), format!("level = {}", cur + 1)),
+//!             rationale: format!("raise to {}", cur + 1),
+//!         }))
+//!     }
+//! }
+//! # fn demo() -> Result<()> {
+//! let dir = std::env::temp_dir().join("rsi-dgm-doctest");
+//! let _ = std::fs::remove_dir_all(&dir);
+//! std::fs::create_dir_all(&dir).unwrap();
+//! std::fs::write(dir.join("level.txt"), "level = 0").unwrap();
+//!
+//! let eval = ClosureEvaluator::new(|root: &Path| {
+//!     let txt = std::fs::read_to_string(root.join("level.txt")).unwrap_or_default();
+//!     let n: f64 = txt.trim().strip_prefix("level = ").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+//!     Fitness { compiles: true, tests_passed: 1, tests_failed: 0, score: n, notes: String::new() }
+//! });
+//! let baseline = Fitness { compiles: true, tests_passed: 1, tests_failed: 0, score: 0.0, notes: String::new() };
+//! let mut eng = DgmEngine::new(Archive::with_root(baseline), Inc, eval,
+//!     DgmConfig::new(&dir, "raise the level"), 42);
+//! eng.run(5)?;
+//! assert!(eng.best().unwrap().fitness.as_ref().unwrap().score >= 1.0);
+//! let _ = std::fs::remove_dir_all(&dir);
+//! # Ok(())
+//! # }
+//! # demo().unwrap();
+//! ```
+
+use crate::json::Json;
+use crate::rng::Rng;
+use crate::sha256::sha256_hex;
+use std::fmt;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+// ════════════════════════════════ Erreurs ════════════════════════════════ //
+
+/// Erreur de la boucle d'auto-amélioration.
+#[derive(Debug)]
+pub enum DgmError {
+    Io(String),
+    /// La cible du patch est hors des chemins autorisés.
+    PathNotAllowed(String),
+    /// Le patch n'a pas pu être appliqué (motif absent / non unique / no-op).
+    Apply(String),
+    /// L'évaluation a échoué (impossible de lancer le build/test).
+    Evaluation(String),
+    /// Le proposeur a échoué.
+    Proposer(String),
+}
+
+impl fmt::Display for DgmError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DgmError::Io(e) => write!(f, "io error: {e}"),
+            DgmError::PathNotAllowed(p) => write!(f, "patch target {p} is outside the allowed paths"),
+            DgmError::Apply(e) => write!(f, "could not apply patch: {e}"),
+            DgmError::Evaluation(e) => write!(f, "evaluation failed: {e}"),
+            DgmError::Proposer(e) => write!(f, "proposer failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for DgmError {}
+
+impl From<std::io::Error> for DgmError {
+    fn from(e: std::io::Error) -> Self {
+        DgmError::Io(e.to_string())
+    }
+}
+
+/// Résultat de la boucle.
+pub type Result<T> = std::result::Result<T, DgmError>;
+
+// ════════════════════════════════ Patch ══════════════════════════════════ //
+
+/// Édition concrète et réversible d'un fichier source, exprimée comme une
+/// substitution exacte `find → replace`. Le motif `find` doit apparaître
+/// **exactement une fois** dans le fichier (sinon le patch est rejeté).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Patch {
+    /// Chemin du fichier, relatif à la racine du workspace.
+    pub target: String,
+    /// Texte exact à remplacer (doit apparaître une seule fois).
+    pub find: String,
+    /// Texte de remplacement.
+    pub replace: String,
+}
+
+impl Patch {
+    pub fn new(target: impl Into<String>, find: impl Into<String>, replace: impl Into<String>) -> Self {
+        Self { target: target.into(), find: find.into(), replace: replace.into() }
+    }
+
+    /// Un patch est un no-op s'il ne change rien.
+    pub fn is_noop(&self) -> bool {
+        self.find == self.replace
+    }
+
+    fn to_json(&self) -> Json {
+        let mut o = Json::obj();
+        o.set("target", Json::Str(self.target.clone()))
+            .set("find", Json::Str(self.find.clone()))
+            .set("replace", Json::Str(self.replace.clone()));
+        o
+    }
+
+    fn from_json(j: &Json) -> Option<Patch> {
+        Some(Patch::new(
+            j.get("target")?.as_str()?,
+            j.get("find")?.as_str()?,
+            j.get("replace")?.as_str()?,
+        ))
+    }
+}
+
+// ════════════════════════════════ Fitness ════════════════════════════════ //
+
+/// Qualité **mesurée empiriquement** d'une variante.
+///
+/// L'ordre est lexicographique et reflète ce qu'un ingénieur prudent
+/// accepterait : un changement doit (1) compiler, (2) ne pas régresser les
+/// tests, et seulement alors (3) son `score` scalaire est comparé. Encoder la
+/// barrière ainsi est ce qui rend la boucle **sûre** : contrairement à un
+/// objectif scalaire pur, une variante qui casse le build ne peut jamais
+/// dominer une qui compile.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fitness {
+    /// Le workspace de la variante a-t-il compilé ?
+    pub compiles: bool,
+    /// Nombre de tests passés.
+    pub tests_passed: u32,
+    /// Nombre de tests échoués.
+    pub tests_failed: u32,
+    /// Récompense scalaire spécifique au domaine (plus = mieux). Comparée
+    /// seulement quand les barrières compile/tests sont à égalité.
+    pub score: f64,
+    /// Notes libres (erreurs du compilateur, remarques de l'évaluateur).
+    pub notes: String,
+}
+
+impl Fitness {
+    /// Fitness d'une variante qui n'a pas compilé — le plancher absolu.
+    pub fn broken(notes: impl Into<String>) -> Self {
+        Self {
+            compiles: false,
+            tests_passed: 0,
+            tests_failed: 0,
+            score: f64::NEG_INFINITY,
+            notes: notes.into(),
+        }
+    }
+
+    /// Vrai si tout test exécuté a passé (et qu'au moins le build a réussi).
+    pub fn all_green(&self) -> bool {
+        self.compiles && self.tests_failed == 0
+    }
+
+    /// Clé de comparaison lexicographique : (compiles, -tests_failed, tests_passed, score).
+    fn key(&self) -> (bool, i64, i64, f64) {
+        (
+            self.compiles,
+            -(self.tests_failed as i64),
+            self.tests_passed as i64,
+            self.score,
+        )
+    }
+
+    /// Strictement meilleur que `other` sous l'ordre de barrière lexicographique.
+    ///
+    /// Les scores NaN sont traités comme le plancher : une mesure malformée ne
+    /// peut jamais être jugée comme une amélioration.
+    pub fn is_better_than(&self, other: &Fitness) -> bool {
+        use std::cmp::Ordering;
+        let (ac, af, ap, asc) = self.key();
+        let (bc, bf, bp, bsc) = other.key();
+        match (ac.cmp(&bc), af.cmp(&bf), ap.cmp(&bp)) {
+            (Ordering::Greater, _, _) => true,
+            (Ordering::Less, _, _) => false,
+            (_, Ordering::Greater, _) => true,
+            (_, Ordering::Less, _) => false,
+            (_, _, Ordering::Greater) => true,
+            (_, _, Ordering::Less) => false,
+            _ => asc.partial_cmp(&bsc) == Some(Ordering::Greater),
+        }
+    }
+
+    fn to_json(&self) -> Json {
+        let mut o = Json::obj();
+        o.set("compiles", Json::Bool(self.compiles))
+            .set("tests_passed", Json::Num(self.tests_passed as f64))
+            .set("tests_failed", Json::Num(self.tests_failed as f64))
+            // Les scores non finis (p. ex. `broken` = -∞) ne sont pas du JSON
+            // valide : on les sérialise en `null` et on les reconstruit à la
+            // lecture (− ∞ si !compiles, sinon 0.0).
+            .set(
+                "score",
+                if self.score.is_finite() { Json::Num(self.score) } else { Json::Null },
+            )
+            .set("notes", Json::Str(self.notes.clone()));
+        o
+    }
+
+    fn from_json(j: &Json) -> Option<Fitness> {
+        let compiles = j.get("compiles")?.as_bool()?;
+        let score = match j.get("score") {
+            Some(Json::Num(n)) => *n,
+            _ if !compiles => f64::NEG_INFINITY,
+            _ => 0.0,
+        };
+        Some(Fitness {
+            compiles,
+            tests_passed: j.get("tests_passed").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            tests_failed: j.get("tests_failed").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            score,
+            notes: j.get("notes").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        })
+    }
+}
+
+// ════════════════════════════════ Statut ═════════════════════════════════ //
+
+/// Statut d'acceptation d'une variante après évaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    /// Proposée mais pas encore évaluée.
+    Pending,
+    /// Évaluée et gardée dans l'archive (elle améliore son parent).
+    Accepted,
+    /// Évaluée et écartée (régression, casse de build, ou no-op).
+    Rejected,
+}
+
+impl Status {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Status::Pending => "pending",
+            Status::Accepted => "accepted",
+            Status::Rejected => "rejected",
+        }
+    }
+    fn from_str(s: &str) -> Status {
+        match s {
+            "accepted" => Status::Accepted,
+            "rejected" => Status::Rejected,
+            _ => Status::Pending,
+        }
+    }
+}
+
+// ════════════════════════════════ Variant ════════════════════════════════ //
+
+/// Une candidate auto-modification, avec sa lignée et sa fitness mesurée.
+/// C'est l'objet « tremplin » de la Darwin Gödel Machine.
+#[derive(Debug, Clone)]
+pub struct Variant {
+    /// Identité **déterministe** (hash de lignée + patch + seq).
+    pub id: String,
+    /// Id du parent dont la variante dérive (`None` pour la racine).
+    pub parent: Option<String>,
+    /// 0 pour la graine, incrémenté le long de chaque lignée.
+    pub generation: u64,
+    /// Index de création logique (horloge déterministe, remplace l'horodatage).
+    pub seq: u64,
+    pub patch: Patch,
+    /// Pourquoi le proposeur croit que ce changement aide.
+    pub rationale: String,
+    pub status: Status,
+    pub fitness: Option<Fitness>,
+}
+
+impl Variant {
+    /// Racine immuable de l'archive : le code non modifié, par définition la
+    /// référence que toute proposition doit battre.
+    pub fn root(baseline: Fitness) -> Self {
+        let patch = Patch::new("", "", "");
+        Self {
+            id: variant_id(None, 0, 0, &patch),
+            parent: None,
+            generation: 0,
+            seq: 0,
+            patch,
+            rationale: "baseline (unmodified codebase)".to_string(),
+            status: Status::Accepted,
+            fitness: Some(baseline),
+        }
+    }
+
+    /// Un enfant frais, pas encore évalué, de `parent`. `seq` est l'index de
+    /// création attribué par le moteur (horloge logique déterministe).
+    pub fn child(parent: &Variant, patch: Patch, rationale: impl Into<String>, seq: u64) -> Self {
+        let generation = parent.generation + 1;
+        Self {
+            id: variant_id(Some(&parent.id), generation, seq, &patch),
+            parent: Some(parent.id.clone()),
+            generation,
+            seq,
+            patch,
+            rationale: rationale.into(),
+            status: Status::Pending,
+            fitness: None,
+        }
+    }
+
+    fn to_json(&self) -> Json {
+        let mut o = Json::obj();
+        o.set("id", Json::Str(self.id.clone()))
+            .set(
+                "parent",
+                self.parent.clone().map(Json::Str).unwrap_or(Json::Null),
+            )
+            .set("generation", Json::Num(self.generation as f64))
+            .set("seq", Json::Num(self.seq as f64))
+            .set("patch", self.patch.to_json())
+            .set("rationale", Json::Str(self.rationale.clone()))
+            .set("status", Json::Str(self.status.as_str().to_string()))
+            .set(
+                "fitness",
+                self.fitness.as_ref().map(|f| f.to_json()).unwrap_or(Json::Null),
+            );
+        o
+    }
+
+    fn from_json(j: &Json) -> Option<Variant> {
+        Some(Variant {
+            id: j.get("id")?.as_str()?.to_string(),
+            parent: j.get("parent").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            generation: j.get("generation").and_then(|v| v.as_u64()).unwrap_or(0),
+            seq: j.get("seq").and_then(|v| v.as_u64()).unwrap_or(0),
+            patch: Patch::from_json(j.get("patch")?)?,
+            rationale: j.get("rationale").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            status: Status::from_str(j.get("status").and_then(|v| v.as_str()).unwrap_or("pending")),
+            fitness: j.get("fitness").and_then(Fitness::from_json),
+        })
+    }
+}
+
+/// Identité déterministe d'une variante : 16 hex de SHA-256 sur sa lignée et
+/// son patch. Reproductible à graine fixe (≠ UUID aléatoire de `soul-rsi`).
+fn variant_id(parent: Option<&str>, generation: u64, seq: u64, patch: &Patch) -> String {
+    let material = format!(
+        "{}|{}|{}|{}|{}|{}",
+        parent.unwrap_or(""),
+        generation,
+        seq,
+        patch.target,
+        patch.find,
+        patch.replace
+    );
+    sha256_hex(&material)[..16].to_string()
+}
+
+// ════════════════════════════════ Archive ════════════════════════════════ //
+
+/// Collection ouverte (append-mostly) des variantes acceptées.
+///
+/// Contrairement à un grimpeur de colline qui ne garde que la meilleure
+/// variante, la Darwin Gödel Machine garde **chaque** tremplin validé et peut
+/// brancher depuis n'importe lequel — l'open-endedness de Lehman & Stanley.
+#[derive(Debug, Clone, Default)]
+pub struct Archive {
+    variants: Vec<Variant>,
+}
+
+impl Archive {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Amorce l'archive avec la référence (le code non modifié).
+    pub fn with_root(baseline: Fitness) -> Self {
+        let mut a = Self::new();
+        a.variants.push(Variant::root(baseline));
+        a
+    }
+
+    pub fn len(&self) -> usize {
+        self.variants.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.variants.is_empty()
+    }
+
+    pub fn variants(&self) -> &[Variant] {
+        &self.variants
+    }
+
+    /// Insère une variante acceptée.
+    pub fn insert(&mut self, variant: Variant) {
+        self.variants.push(variant);
+    }
+
+    /// Recherche une variante par id.
+    pub fn get(&self, id: &str) -> Option<&Variant> {
+        self.variants.iter().find(|v| v.id == id)
+    }
+
+    /// La meilleure variante par fitness (la candidate à promouvoir).
+    pub fn best(&self) -> Option<&Variant> {
+        use std::cmp::Ordering;
+        self.variants.iter().max_by(|a, b| match (&a.fitness, &b.fitness) {
+            (Some(fa), Some(fb)) => {
+                if fa.is_better_than(fb) {
+                    Ordering::Greater
+                } else if fb.is_better_than(fa) {
+                    Ordering::Less
+                } else {
+                    Ordering::Equal
+                }
+            }
+            (Some(_), None) => Ordering::Greater,
+            (None, Some(_)) => Ordering::Less,
+            (None, None) => Ordering::Equal,
+        })
+    }
+
+    /// Sélectionne un parent dont brancher.
+    ///
+    /// La sélection est ouverte : chaque variante a une chance non nulle, mais
+    /// les meilleures variantes et les lignées **sous-explorées** (peu d'enfants
+    /// jusqu'ici) sont favorisées — une pondération qualité-diversité légère.
+    /// Déterministe pour un état de RNG donné.
+    pub fn select_parent(&self, rng: &mut Rng) -> Option<&Variant> {
+        if self.variants.is_empty() {
+            return None;
+        }
+        let weights: Vec<f64> = self
+            .variants
+            .iter()
+            .map(|v| {
+                let children = self
+                    .variants
+                    .iter()
+                    .filter(|c| c.parent.as_deref() == Some(v.id.as_str()))
+                    .count() as f64;
+                let quality = v
+                    .fitness
+                    .as_ref()
+                    .map(|f| if f.compiles { 1.0 } else { 0.1 })
+                    .unwrap_or(0.1);
+                let novelty = 1.0 / (1.0 + children);
+                quality * novelty + f64::EPSILON
+            })
+            .collect();
+
+        let total: f64 = weights.iter().sum();
+        let mut pick = rng.uniform() * total;
+        for (v, w) in self.variants.iter().zip(weights.iter()) {
+            pick -= w;
+            if pick <= 0.0 {
+                return Some(v);
+            }
+        }
+        self.variants.last()
+    }
+
+    /// Sérialise l'archive en JSON (std-only, via [`crate::json`]).
+    pub fn to_json(&self) -> String {
+        let arr = Json::Arr(self.variants.iter().map(|v| v.to_json()).collect());
+        let mut o = Json::obj();
+        o.set("variants", arr);
+        o.to_string()
+    }
+
+    /// Reconstruit une archive depuis le JSON produit par [`Archive::to_json`].
+    pub fn from_json(s: &str) -> Result<Self> {
+        let j = Json::parse(s).map_err(DgmError::Apply)?;
+        let arr = j
+            .get("variants")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| DgmError::Apply("missing 'variants' array".to_string()))?;
+        let variants = arr
+            .iter()
+            .filter_map(Variant::from_json)
+            .collect::<Vec<_>>();
+        Ok(Archive { variants })
+    }
+}
+
+// ════════════════════════════════ Rôles ══════════════════════════════════ //
+
+/// Modèle de complétion de texte minimal. Un adaptateur LLM l'implémente, mais
+/// aussi un stub déterministe pour les tests. Le cœur ne dépend d'aucun crate
+/// LLM concret — l'« improver » est « juste une fonction » (STOP).
+pub trait CodeModel {
+    fn complete(&self, prompt: &str) -> Result<String>;
+}
+
+/// Tout ce dont un proposeur a besoin pour raisonner sur le prochain changement.
+pub struct ImprovementContext<'a> {
+    /// Racine du workspace (vivant, lecture seule) que le proposeur peut inspecter.
+    pub workspace_root: &'a Path,
+    /// Objectif de haut niveau que l'amélioration doit servir.
+    pub goal: &'a str,
+    /// Fitness du parent dont le changement va brancher.
+    pub parent_fitness: Option<&'a Fitness>,
+    /// Justifications des tentatives récemment rejetées, pour éviter de répéter
+    /// les impasses (« renforcement verbal » bon marché, cf. Reflexion).
+    pub recent_rejections: &'a [String],
+}
+
+impl ImprovementContext<'_> {
+    /// Lit un fichier source relatif à la racine du workspace.
+    pub fn read(&self, rel: &str) -> std::io::Result<String> {
+        std::fs::read_to_string(self.resolve(rel))
+    }
+
+    pub fn resolve(&self, rel: &str) -> PathBuf {
+        self.workspace_root.join(rel)
+    }
+}
+
+/// Une auto-modification proposée avec son raisonnement.
+#[derive(Debug, Clone)]
+pub struct Proposal {
+    pub patch: Patch,
+    pub rationale: String,
+}
+
+/// Génère la prochaine édition candidate. Rendre `None` signifie « pas de
+/// changement utile cette étape » — un résultat légitime et courant.
+pub trait Proposer {
+    fn propose(&self, ctx: &ImprovementContext<'_>, rng: &mut Rng) -> Result<Option<Proposal>>;
+}
+
+/// Mesure empiriquement un workspace candidat. Le contrat : ne **jamais** faire
+/// confiance à l'auto-évaluation d'une proposition — la construire et lancer les
+/// tests. C'est la barrière de validation non négociable de la DGM.
+pub trait Evaluator {
+    /// Évalue le workspace enraciné à `workspace` (une copie isolée avec le
+    /// patch candidat déjà appliqué). Ne doit jamais toucher l'arbre vivant.
+    fn evaluate(&self, workspace: &Path) -> Result<Fitness>;
+}
+
+// ═════════════════════════════ Snapshot isolé ════════════════════════════ //
+
+/// Répertoires jamais utiles à copier dans un snapshot (gros et régénérés).
+const SKIP_DIRS: &[&str] = &["target", ".git", "node_modules"];
+
+static SNAP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Copie jetable d'une racine de workspace, avec (optionnellement) un patch
+/// appliqué. Le répertoire temporaire sous-jacent est supprimé au `Drop`.
+pub struct WorkspaceSnapshot {
+    root: PathBuf,
+    /// Répertoire temporaire parent à nettoyer.
+    tmp: PathBuf,
+}
+
+impl WorkspaceSnapshot {
+    /// Copie récursivement `src_root` dans un répertoire temporaire frais.
+    pub fn create(src_root: &Path) -> Result<Self> {
+        let tmp = unique_tmp_dir();
+        let root = tmp.join("workspace");
+        std::fs::create_dir_all(&root)?;
+        copy_tree(src_root, &root)?;
+        Ok(Self { root, tmp })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn resolve(&self, rel: &str) -> PathBuf {
+        self.root.join(rel)
+    }
+
+    /// Applique un patch au snapshot (édition sauvegardée dans `.rsi_backups`,
+    /// exactement comme une édition vivante le serait).
+    pub fn apply(&self, patch: &Patch) -> Result<()> {
+        if patch.is_noop() {
+            return Err(DgmError::Apply("patch is a no-op".to_string()));
+        }
+        let target = self.resolve(&patch.target);
+        // Empêche l'évasion hors de la racine (`..`, chemins absolus…).
+        let canon_root = self.root.canonicalize().unwrap_or_else(|_| self.root.clone());
+        let canon_target = target
+            .canonicalize()
+            .unwrap_or_else(|_| target.clone());
+        if !canon_target.starts_with(&canon_root) {
+            return Err(DgmError::PathNotAllowed(patch.target.clone()));
+        }
+        let backups = self.root.join(".rsi_backups");
+        patch_file_with_backup(&target, &patch.find, &patch.replace, &backups)?;
+        Ok(())
+    }
+}
+
+impl Drop for WorkspaceSnapshot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.tmp);
+    }
+}
+
+/// Applique un patch accepté à l'arbre **vivant**, avec sauvegarde, et rend l'id
+/// de sauvegarde. C'est la **seule** fonction qui mute le vrai code source ; les
+/// appelants la gardent par une évaluation passante et tout-au-vert.
+pub fn promote_to_live(live_root: &Path, patch: &Patch, backup_dir: &Path) -> Result<String> {
+    if patch.is_noop() {
+        return Err(DgmError::Apply("patch is a no-op".to_string()));
+    }
+    let target = live_root.join(&patch.target);
+    patch_file_with_backup(&target, &patch.find, &patch.replace, backup_dir)
+}
+
+/// Substitution exacte `find → replace` avec sauvegarde de l'original.
+///
+/// `find` doit apparaître **exactement une fois** (motif absent ou ambigu ⇒
+/// rejet : un patch ambigu ne doit jamais éditer silencieusement la mauvaise
+/// occurrence). Rend l'id de sauvegarde (16 hex SHA-256 du contenu original).
+fn patch_file_with_backup(target: &Path, find: &str, replace: &str, backup_dir: &Path) -> Result<String> {
+    let content = std::fs::read_to_string(target)
+        .map_err(|e| DgmError::Apply(format!("read {}: {e}", target.display())))?;
+    let occurrences = content.matches(find).count();
+    match occurrences {
+        0 => return Err(DgmError::Apply(format!("pattern not found in {}", target.display()))),
+        1 => {}
+        n => {
+            return Err(DgmError::Apply(format!(
+                "pattern is not unique in {} ({n} occurrences)",
+                target.display()
+            )))
+        }
+    }
+    std::fs::create_dir_all(backup_dir)?;
+    let id = sha256_hex(&format!("{}|{}", target.display(), content))[..16].to_string();
+    std::fs::write(backup_dir.join(format!("{id}.bak")), &content)?;
+    let patched = content.replacen(find, replace, 1);
+    std::fs::write(target, patched)
+        .map_err(|e| DgmError::Apply(format!("write {}: {e}", target.display())))?;
+    Ok(id)
+}
+
+fn unique_tmp_dir() -> PathBuf {
+    let n = SNAP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("rsi-dgm-{pid}-{n}-{nanos}"))
+}
+
+fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        let ty = entry.file_type()?;
+        let to = dst.join(&name);
+        if ty.is_dir() {
+            if SKIP_DIRS.contains(&name_str.as_ref()) {
+                continue;
+            }
+            std::fs::create_dir_all(&to)?;
+            copy_tree(&entry.path(), &to)?;
+        } else if ty.is_file() {
+            std::fs::copy(entry.path(), &to)?;
+        }
+        // liens symboliques et autres types de nœuds intentionnellement ignorés.
+    }
+    Ok(())
+}
+
+// ═══════════════════════════════ Évaluateurs ═════════════════════════════ //
+
+/// Construit et teste un workspace candidat avec `cargo`. **Sous-processus
+/// borné** (timeout + sortie plafonnée), conformément à la doctrine de sûreté
+/// de RSI (cf. [`crate::knowledge`]).
+pub struct CargoEvaluator {
+    /// Répertoire de manifeste à construire, relatif à la racine du snapshot.
+    pub package_subdir: PathBuf,
+    /// Args additionnels passés à `cargo test` (p. ex. `-p some_crate`).
+    pub test_args: Vec<String>,
+    /// Récompense scalaire = taux de réussite des tests (sinon 0.0).
+    pub score_from_passrate: bool,
+    /// Délai max par invocation `cargo` (anti-blocage).
+    pub timeout: Duration,
+    /// Plafond d'octets capturés par flux (anti-OOM).
+    pub max_output: u64,
+}
+
+impl Default for CargoEvaluator {
+    fn default() -> Self {
+        Self {
+            package_subdir: PathBuf::new(),
+            test_args: Vec::new(),
+            score_from_passrate: true,
+            timeout: Duration::from_secs(300),
+            max_output: 4 * 1024 * 1024,
+        }
+    }
+}
+
+impl Evaluator for CargoEvaluator {
+    fn evaluate(&self, workspace: &Path) -> Result<Fitness> {
+        let dir = workspace.join(&self.package_subdir);
+
+        // 1. Barrière de compilation.
+        let mut build = Command::new("cargo");
+        build.arg("build").arg("--quiet").current_dir(&dir);
+        let (build_ok, build_out) = run_bounded(build, self.timeout, self.max_output)
+            .map_err(|e| DgmError::Evaluation(format!("cargo build: {e}")))?;
+        if !build_ok {
+            return Ok(Fitness::broken(format!("build failed:\n{}", tail(&build_out, 1500))));
+        }
+
+        // 2. Barrière de tests.
+        let mut test = Command::new("cargo");
+        test.arg("test").arg("--quiet").current_dir(&dir);
+        for a in &self.test_args {
+            test.arg(a);
+        }
+        let (test_ok, out) = run_bounded(test, self.timeout, self.max_output)
+            .map_err(|e| DgmError::Evaluation(format!("cargo test: {e}")))?;
+        let (passed, failed) = parse_test_counts(&out);
+
+        let score = if self.score_from_passrate {
+            let total = passed + failed;
+            if total == 0 { 0.0 } else { passed as f64 / total as f64 }
+        } else {
+            0.0
+        };
+
+        Ok(Fitness {
+            compiles: true,
+            tests_passed: passed,
+            tests_failed: failed,
+            score,
+            notes: if test_ok {
+                "all tests passed".to_string()
+            } else {
+                format!("tests failed:\n{}", tail(&out, 1500))
+            },
+        })
+    }
+}
+
+/// Lance une commande avec **timeout** et **sortie bornée** (stdout+stderr
+/// fusionnés). Rend `(success, output)`. Un dépassement de délai ⇒ kill et
+/// `success = false`. std-only (sondage `try_wait`, lecture en threads).
+fn run_bounded(mut cmd: Command, timeout: Duration, max_output: u64) -> std::io::Result<(bool, String)> {
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let per_stream = (max_output / 2).max(1);
+
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    let (tx_o, rx_o) = mpsc::channel();
+    let (tx_e, rx_e) = mpsc::channel();
+    if let Some(o) = stdout.take() {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = o.take(per_stream).read_to_end(&mut buf);
+            let _ = tx_o.send(buf);
+        });
+    } else {
+        let _ = tx_o.send(Vec::new());
+    }
+    if let Some(e) = stderr.take() {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = e.take(per_stream).read_to_end(&mut buf);
+            let _ = tx_e.send(buf);
+        });
+    } else {
+        let _ = tx_e.send(Vec::new());
+    }
+
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break Some(s),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None; // timeout
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+
+    let ob = rx_o.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+    let eb = rx_e.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&ob),
+        String::from_utf8_lossy(&eb)
+    );
+    Ok((status.map(|s| s.success()).unwrap_or(false), combined))
+}
+
+/// Somme les lignes `test result: ok. N passed; M failed` que `cargo` émet par
+/// binaire de test.
+fn parse_test_counts(output: &str) -> (u32, u32) {
+    let mut passed = 0u32;
+    let mut failed = 0u32;
+    for line in output.lines() {
+        let line = line.trim();
+        if !line.starts_with("test result:") {
+            continue;
+        }
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        for pair in tokens.windows(2) {
+            let kind = pair[1].trim_end_matches(';');
+            match kind {
+                "passed" => passed += pair[0].parse().unwrap_or(0),
+                "failed" => failed += pair[0].parse().unwrap_or(0),
+                _ => {}
+            }
+        }
+    }
+    (passed, failed)
+}
+
+fn tail(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        let start = s.len() - max;
+        let start = (start..s.len()).find(|i| s.is_char_boundary(*i)).unwrap_or(s.len());
+        format!("…{}", &s[start..])
+    }
+}
+
+/// Évaluateur adossé à une closure arbitraire — pratique pour les tests et les
+/// récompenses de domaine qui n'ont pas besoin d'un build complet.
+pub struct ClosureEvaluator<F>
+where
+    F: Fn(&Path) -> Fitness,
+{
+    f: F,
+}
+
+impl<F> ClosureEvaluator<F>
+where
+    F: Fn(&Path) -> Fitness,
+{
+    pub fn new(f: F) -> Self {
+        Self { f }
+    }
+}
+
+impl<F> Evaluator for ClosureEvaluator<F>
+where
+    F: Fn(&Path) -> Fitness,
+{
+    fn evaluate(&self, workspace: &Path) -> Result<Fitness> {
+        Ok((self.f)(workspace))
+    }
+}
+
+// ════════════════════════════ Proposeur LLM ══════════════════════════════ //
+
+/// Adapte n'importe quel [`crate::llm::LlmClient`] de RSI (Ollama, Claude…) en
+/// [`CodeModel`], pour piloter la boucle DGM avec les backends existants.
+pub struct LlmCodeModel<C: crate::llm::LlmClient> {
+    client: C,
+}
+
+impl<C: crate::llm::LlmClient> LlmCodeModel<C> {
+    pub fn new(client: C) -> Self {
+        Self { client }
+    }
+}
+
+impl<C: crate::llm::LlmClient> CodeModel for LlmCodeModel<C> {
+    fn complete(&self, prompt: &str) -> Result<String> {
+        let mut out = self
+            .client
+            .propose(prompt, 1)
+            .map_err(|e| DgmError::Proposer(format!("{e:?}")))?;
+        if out.is_empty() {
+            return Err(DgmError::Proposer("backend returned no completion".to_string()));
+        }
+        Ok(out.remove(0))
+    }
+}
+
+/// Enveloppe un [`CodeModel`] pour qu'il pilote la boucle d'auto-amélioration —
+/// c'est l'« improver » de STOP.
+pub struct LlmProposer<M: CodeModel> {
+    model: M,
+    /// Fichiers que le modèle a le droit de toucher, relatifs à la racine. Un
+    /// changement sur autre chose est écarté — le garde-fou principal.
+    allowed_paths: Vec<String>,
+}
+
+impl<M: CodeModel> LlmProposer<M> {
+    pub fn new(model: M, allowed_paths: Vec<String>) -> Self {
+        Self { model, allowed_paths }
+    }
+
+    fn build_prompt(&self, ctx: &ImprovementContext<'_>) -> String {
+        let fitness = ctx
+            .parent_fitness
+            .map(|f| {
+                format!(
+                    "compiles={} tests_passed={} tests_failed={} score={:.4}",
+                    f.compiles, f.tests_passed, f.tests_failed, f.score
+                )
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let mut lessons = String::new();
+        if !ctx.recent_rejections.is_empty() {
+            lessons.push_str("\nRecently rejected ideas (do not repeat these):\n");
+            for r in ctx.recent_rejections {
+                lessons.push_str(&format!("- {r}\n"));
+            }
+        }
+
+        format!(
+            "You are improving a Rust codebase. Goal: {goal}\n\
+             Parent fitness: {fitness}\n\
+             You may ONLY edit these files: {allowed}\n{lessons}\n\
+             Propose ONE small, safe, compiling change. Respond EXACTLY in this format \
+             and nothing else:\n\
+             TARGET: <relative/path.rs>\n\
+             FIND:\n<<<\n<exact text that currently exists, occurring once>\n>>>\n\
+             REPLACE:\n<<<\n<the replacement text>\n>>>\n\
+             RATIONALE: <one short line>\n",
+            goal = ctx.goal,
+            fitness = fitness,
+            allowed = self.allowed_paths.join(", "),
+            lessons = lessons,
+        )
+    }
+}
+
+impl<M: CodeModel> Proposer for LlmProposer<M> {
+    fn propose(&self, ctx: &ImprovementContext<'_>, _rng: &mut Rng) -> Result<Option<Proposal>> {
+        let prompt = self.build_prompt(ctx);
+        let raw = self.model.complete(&prompt)?;
+        let proposal = match parse_proposal(&raw) {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+        // Garde-fou : ne jamais laisser le modèle s'échapper de la liste blanche.
+        if !self.allowed_paths.iter().any(|a| a == &proposal.patch.target) {
+            crate::obs::warn(
+                "dgm.proposal_outside_allowlist",
+                &format!("target={}", proposal.patch.target),
+            );
+            return Ok(None);
+        }
+        Ok(Some(proposal))
+    }
+}
+
+/// Parse l'enveloppe stricte. Rend `None` si le modèle est hors-format — la
+/// boucle traite cela comme « pas de proposition », jamais comme un crash.
+fn parse_proposal(raw: &str) -> Option<Proposal> {
+    let target = line_value(raw, "TARGET:")?;
+    let find = block_after(raw, "FIND:")?;
+    let replace = block_after(raw, "REPLACE:")?;
+    let rationale = line_value(raw, "RATIONALE:").unwrap_or_else(|| "llm proposal".to_string());
+    if find.is_empty() || find == replace {
+        return None;
+    }
+    Some(Proposal { patch: Patch::new(target, find, replace), rationale })
+}
+
+fn line_value(raw: &str, key: &str) -> Option<String> {
+    raw.lines()
+        .find_map(|l| l.trim().strip_prefix(key).map(|v| v.trim().to_string()))
+        .filter(|s| !s.is_empty())
+}
+
+/// Extrait le texte entre les balises `<<<` / `>>>` qui suivent `key`.
+fn block_after(raw: &str, key: &str) -> Option<String> {
+    let key_pos = raw.find(key)?;
+    let after_key = &raw[key_pos + key.len()..];
+    let open = after_key.find("<<<")?;
+    let rest = &after_key[open + 3..];
+    let close = rest.find(">>>")?;
+    Some(rest[..close].trim_matches('\n').to_string())
+}
+
+// ════════════════════════════════ Moteur ═════════════════════════════════ //
+
+/// Réglages de la boucle.
+#[derive(Debug, Clone)]
+pub struct DgmConfig {
+    /// Racine du workspace vivant, snapshotée à chaque évaluation.
+    pub workspace_root: PathBuf,
+    /// Objectif de haut niveau remis au proposeur.
+    pub goal: String,
+    /// Si vrai, une variante n'est acceptée que si toute sa suite de tests est
+    /// verte (compile + zéro échec). Fortement recommandé en mode non surveillé.
+    pub accept_requires_all_green: bool,
+    /// Combien de justifications de rejet récentes re-fournir au proposeur.
+    pub rejection_memory: usize,
+}
+
+impl DgmConfig {
+    pub fn new(workspace_root: impl Into<PathBuf>, goal: impl Into<String>) -> Self {
+        Self {
+            workspace_root: workspace_root.into(),
+            goal: goal.into(),
+            accept_requires_all_green: true,
+            rejection_memory: 8,
+        }
+    }
+}
+
+/// Ce qui s'est passé en une étape — l'unité auditée de progrès.
+#[derive(Debug, Clone)]
+pub enum StepOutcome {
+    /// Le proposeur a décliné de suggérer un changement.
+    NoProposal,
+    /// Une candidate a été évaluée. `accepted` est vrai ssi elle entre dans
+    /// l'archive.
+    Evaluated {
+        variant_id: String,
+        parent_id: Option<String>,
+        accepted: bool,
+        fitness: Fitness,
+    },
+}
+
+impl StepOutcome {
+    pub fn accepted(&self) -> bool {
+        matches!(self, StepOutcome::Evaluated { accepted: true, .. })
+    }
+}
+
+/// Le moteur d'auto-amélioration. Générique sur le proposeur et l'évaluateur :
+/// la même boucle pilote les tests unitaires (stubs déterministes) et la
+/// production (LLM + `cargo`).
+pub struct DgmEngine<P: Proposer, E: Evaluator> {
+    archive: Archive,
+    proposer: P,
+    evaluator: E,
+    config: DgmConfig,
+    rng: Rng,
+    recent_rejections: Vec<String>,
+    history: Vec<StepOutcome>,
+    next_seq: u64,
+}
+
+impl<P: Proposer, E: Evaluator> DgmEngine<P, E> {
+    pub fn new(archive: Archive, proposer: P, evaluator: E, config: DgmConfig, seed: u64) -> Self {
+        let next_seq = archive.len() as u64;
+        Self {
+            archive,
+            proposer,
+            evaluator,
+            config,
+            rng: Rng::new(seed),
+            recent_rejections: Vec::new(),
+            history: Vec::new(),
+            next_seq,
+        }
+    }
+
+    pub fn archive(&self) -> &Archive {
+        &self.archive
+    }
+
+    pub fn history(&self) -> &[StepOutcome] {
+        &self.history
+    }
+
+    pub fn best(&self) -> Option<&Variant> {
+        self.archive.best()
+    }
+
+    /// Lance une étape propose → évalue → sélectionne.
+    pub fn step(&mut self) -> Result<StepOutcome> {
+        // 1. Choisir un parent dont brancher (sélection ouverte).
+        let parent = match self.archive.select_parent(&mut self.rng) {
+            Some(v) => v.clone(),
+            None => return Ok(self.record(StepOutcome::NoProposal)),
+        };
+
+        // 2. Demander un changement au proposeur.
+        let rejections = self.recent_rejections.clone();
+        let proposal = {
+            let ctx = ImprovementContext {
+                workspace_root: &self.config.workspace_root,
+                goal: &self.config.goal,
+                parent_fitness: parent.fitness.as_ref(),
+                recent_rejections: &rejections,
+            };
+            self.proposer.propose(&ctx, &mut self.rng)?
+        };
+        let proposal = match proposal {
+            Some(p) if !p.patch.is_noop() => p,
+            _ => return Ok(self.record(StepOutcome::NoProposal)),
+        };
+
+        // 3. Évaluer la candidate dans un snapshot isolé.
+        let fitness = match self.evaluate_candidate(&proposal.patch) {
+            Ok(f) => f,
+            Err(e) => Fitness::broken(format!("could not evaluate: {e}")),
+        };
+
+        // 4. N'accepter que si elle bat le parent sous l'ordre de barrière.
+        let parent_fit = parent
+            .fitness
+            .clone()
+            .unwrap_or_else(|| Fitness::broken("parent had no fitness"));
+        let gate_ok = !self.config.accept_requires_all_green || fitness.all_green();
+        let accepted = gate_ok && fitness.is_better_than(&parent_fit);
+
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        let mut child = Variant::child(&parent, proposal.patch, proposal.rationale, seq);
+        child.fitness = Some(fitness.clone());
+        child.status = if accepted { Status::Accepted } else { Status::Rejected };
+
+        if accepted {
+            crate::obs::info(
+                "dgm.accepted",
+                &format!(
+                    "variant={} generation={} score={}",
+                    child.id, child.generation, fitness.score
+                ),
+            );
+            self.archive.insert(child.clone());
+        } else {
+            self.remember_rejection(&child.rationale);
+        }
+
+        Ok(self.record(StepOutcome::Evaluated {
+            variant_id: child.id,
+            parent_id: child.parent,
+            accepted,
+            fitness,
+        }))
+    }
+
+    /// Lance jusqu'à `max_steps`, en rendant le résultat de chaque étape.
+    pub fn run(&mut self, max_steps: usize) -> Result<Vec<StepOutcome>> {
+        let mut out = Vec::with_capacity(max_steps);
+        for _ in 0..max_steps {
+            out.push(self.step()?);
+        }
+        Ok(out)
+    }
+
+    fn record(&mut self, o: StepOutcome) -> StepOutcome {
+        self.history.push(o.clone());
+        o
+    }
+
+    fn evaluate_candidate(&self, patch: &Patch) -> Result<Fitness> {
+        let snap = WorkspaceSnapshot::create(&self.config.workspace_root)?;
+        if let Err(e) = snap.apply(patch) {
+            // Un patch qui ne s'applique pas (motif manquant) est une candidate
+            // ratée, pas un crash de la boucle.
+            return Ok(Fitness::broken(format!("patch did not apply: {e}")));
+        }
+        self.evaluator.evaluate(snap.root())
+    }
+
+    fn remember_rejection(&mut self, rationale: &str) {
+        self.recent_rejections.push(rationale.to_string());
+        let cap = self.config.rejection_memory;
+        if self.recent_rejections.len() > cap {
+            let overflow = self.recent_rejections.len() - cap;
+            self.recent_rejections.drain(0..overflow);
+        }
+    }
+}
+
+// ════════════════════════════════ Tests ══════════════════════════════════ //
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fit(compiles: bool, passed: u32, failed: u32, score: f64) -> Fitness {
+        Fitness { compiles, tests_passed: passed, tests_failed: failed, score, notes: String::new() }
+    }
+
+    // ---- Fitness : barrière lexicographique ---- //
+
+    #[test]
+    fn compile_gate_dominates_score() {
+        let broken = fit(false, 0, 0, 1_000.0);
+        let working = fit(true, 1, 0, -1.0);
+        assert!(working.is_better_than(&broken));
+        assert!(!broken.is_better_than(&working));
+    }
+
+    #[test]
+    fn test_regression_beats_score() {
+        let regressed = fit(true, 10, 1, 100.0);
+        let clean = fit(true, 5, 0, 0.0);
+        assert!(clean.is_better_than(&regressed));
+    }
+
+    #[test]
+    fn score_breaks_ties() {
+        let lo = fit(true, 5, 0, 1.0);
+        let hi = fit(true, 5, 0, 2.0);
+        assert!(hi.is_better_than(&lo));
+        assert!(!lo.is_better_than(&hi));
+    }
+
+    #[test]
+    fn nan_score_is_never_an_improvement() {
+        let nan = fit(true, 5, 0, f64::NAN);
+        let ok = fit(true, 5, 0, 0.0);
+        assert!(!nan.is_better_than(&ok));
+    }
+
+    #[test]
+    fn noop_patch_detected() {
+        assert!(Patch::new("a.rs", "x", "x").is_noop());
+        assert!(!Patch::new("a.rs", "x", "y").is_noop());
+    }
+
+    // ---- IDs déterministes (amélioration vs uuid) ---- //
+
+    #[test]
+    fn variant_ids_are_deterministic() {
+        let base = fit(true, 1, 0, 0.0);
+        let r1 = Variant::root(base.clone());
+        let r2 = Variant::root(base);
+        assert_eq!(r1.id, r2.id, "root id must be reproducible");
+        let p = Patch::new("a.rs", "x", "y");
+        let c1 = Variant::child(&r1, p.clone(), "improve", 1);
+        let c2 = Variant::child(&r2, p, "improve", 1);
+        assert_eq!(c1.id, c2.id, "child id must be reproducible");
+        assert_ne!(c1.id, r1.id);
+    }
+
+    // ---- Archive ---- //
+
+    fn afit(score: f64) -> Fitness {
+        fit(true, 1, 0, score)
+    }
+
+    #[test]
+    fn root_archive_has_one_entry() {
+        let a = Archive::with_root(afit(0.0));
+        assert_eq!(a.len(), 1);
+        assert!(!a.is_empty());
+    }
+
+    #[test]
+    fn best_tracks_highest_fitness() {
+        let mut a = Archive::with_root(afit(0.0));
+        let root = a.variants()[0].clone();
+        let mut better = Variant::child(&root, Patch::new("a", "x", "y"), "improve", 1);
+        better.fitness = Some(afit(5.0));
+        a.insert(better.clone());
+        assert_eq!(a.best().unwrap().id, better.id);
+    }
+
+    #[test]
+    fn parent_selection_is_seed_deterministic() {
+        let a = Archive::with_root(afit(0.0));
+        let mut r1 = Rng::new(42);
+        let mut r2 = Rng::new(42);
+        let p1 = a.select_parent(&mut r1).unwrap().id.clone();
+        let p2 = a.select_parent(&mut r2).unwrap().id.clone();
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn json_round_trip_archive() {
+        let mut a = Archive::with_root(afit(1.5));
+        let root = a.variants()[0].clone();
+        // une variante normale…
+        let mut child = Variant::child(&root, Patch::new("src/x.rs", "a", "b"), "tweak", 1);
+        child.fitness = Some(afit(2.0));
+        child.status = Status::Accepted;
+        a.insert(child);
+        // …et une variante cassée (-∞, doit round-tripper via null).
+        let mut broken = Variant::child(&root, Patch::new("src/y.rs", "c", "d"), "oops", 2);
+        broken.fitness = Some(Fitness::broken("syntax error"));
+        broken.status = Status::Rejected;
+        a.insert(broken);
+
+        let s = a.to_json();
+        let b = Archive::from_json(&s).unwrap();
+        assert_eq!(b.len(), a.len());
+        // l'id, le statut et la fitness survivent au tour.
+        let rebuilt_broken = b.variants().iter().find(|v| v.patch.target == "src/y.rs").unwrap();
+        assert_eq!(rebuilt_broken.status, Status::Rejected);
+        let f = rebuilt_broken.fitness.as_ref().unwrap();
+        assert!(!f.compiles && f.score == f64::NEG_INFINITY);
+    }
+
+    // ---- Snapshot : isolation ---- //
+
+    fn write(root: &Path, rel: &str, content: &str) {
+        let p = root.join(rel);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(p, content).unwrap();
+    }
+
+    fn fresh_dir(tag: &str) -> PathBuf {
+        let d = unique_tmp_dir().join(tag);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn snapshot_copies_and_isolates() {
+        let live = fresh_dir("live");
+        write(&live, "src/lib.rs", "fn main() { let x = 0; }");
+        write(&live, "target/junk.o", "binary"); // doit être sauté
+
+        let snap = WorkspaceSnapshot::create(&live).unwrap();
+        assert!(snap.resolve("src/lib.rs").exists());
+        assert!(!snap.resolve("target/junk.o").exists());
+
+        snap.apply(&Patch::new("src/lib.rs", "let x = 0;", "let x = 1;")).unwrap();
+        let live_src = std::fs::read_to_string(live.join("src/lib.rs")).unwrap();
+        assert!(live_src.contains("let x = 0;"), "live tree was mutated");
+        let snap_src = std::fs::read_to_string(snap.resolve("src/lib.rs")).unwrap();
+        assert!(snap_src.contains("let x = 1;"));
+        let _ = std::fs::remove_dir_all(&live);
+    }
+
+    #[test]
+    fn noop_patch_is_rejected_by_snapshot() {
+        let live = fresh_dir("noop");
+        write(&live, "a.rs", "x");
+        let snap = WorkspaceSnapshot::create(&live).unwrap();
+        assert!(snap.apply(&Patch::new("a.rs", "x", "x")).is_err());
+        let _ = std::fs::remove_dir_all(&live);
+    }
+
+    #[test]
+    fn ambiguous_patch_is_rejected() {
+        // Un motif présent deux fois ⇒ rejet (sûreté : pas d'édition ambiguë).
+        let live = fresh_dir("ambig");
+        write(&live, "a.rs", "let v = 1; let v = 1;");
+        let snap = WorkspaceSnapshot::create(&live).unwrap();
+        let err = snap.apply(&Patch::new("a.rs", "let v = 1;", "let v = 2;"));
+        assert!(err.is_err(), "non-unique pattern must be rejected");
+        let _ = std::fs::remove_dir_all(&live);
+    }
+
+    #[test]
+    fn promote_writes_live_tree() {
+        let live = fresh_dir("promote");
+        write(&live, "a.rs", "value = 1");
+        let backups = fresh_dir("promote-bak");
+        promote_to_live(&live, &Patch::new("a.rs", "value = 1", "value = 2"), &backups).unwrap();
+        let after = std::fs::read_to_string(live.join("a.rs")).unwrap();
+        assert_eq!(after, "value = 2");
+        let _ = std::fs::remove_dir_all(&live);
+        let _ = std::fs::remove_dir_all(&backups);
+    }
+
+    // ---- Évaluateur : parsing de sortie cargo ---- //
+
+    #[test]
+    fn parses_multi_binary_test_output() {
+        let out = "\
+running 3 tests
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+running 2 tests
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+";
+        assert_eq!(parse_test_counts(out), (4, 1));
+    }
+
+    #[test]
+    fn no_test_lines_is_zero() {
+        assert_eq!(parse_test_counts("nothing here"), (0, 0));
+    }
+
+    #[test]
+    fn closure_evaluator_runs() {
+        let e = ClosureEvaluator::new(|_p: &Path| afit(9.0));
+        let tmp = fresh_dir("clos");
+        let f = e.evaluate(&tmp).unwrap();
+        assert!(f.all_green());
+        assert_eq!(f.score, 9.0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ---- Proposeur LLM : parsing + liste blanche ---- //
+
+    struct FixedModel(String);
+    impl CodeModel for FixedModel {
+        fn complete(&self, _prompt: &str) -> Result<String> {
+            Ok(self.0.clone())
+        }
+    }
+
+    const WELL_FORMED: &str = "\
+TARGET: src/lib.rs
+FIND:
+<<<
+let x = 0;
+>>>
+REPLACE:
+<<<
+let x = 1;
+>>>
+RATIONALE: bump the constant
+";
+
+    #[test]
+    fn parses_well_formed_proposal() {
+        let p = parse_proposal(WELL_FORMED).unwrap();
+        assert_eq!(p.patch.target, "src/lib.rs");
+        assert_eq!(p.patch.find, "let x = 0;");
+        assert_eq!(p.patch.replace, "let x = 1;");
+        assert_eq!(p.rationale, "bump the constant");
+    }
+
+    #[test]
+    fn off_format_yields_none() {
+        assert!(parse_proposal("I think you should change something.").is_none());
+    }
+
+    #[test]
+    fn proposer_enforces_allow_list() {
+        let mut rng = Rng::new(0);
+        let root = std::path::Path::new("/tmp");
+        let ctx = ImprovementContext {
+            workspace_root: root,
+            goal: "g",
+            parent_fitness: None,
+            recent_rejections: &[],
+        };
+        let ok = LlmProposer::new(FixedModel(WELL_FORMED.to_string()), vec!["src/lib.rs".into()]);
+        assert!(ok.propose(&ctx, &mut rng).unwrap().is_some());
+        let blocked = LlmProposer::new(FixedModel(WELL_FORMED.to_string()), vec!["other.rs".into()]);
+        assert!(blocked.propose(&ctx, &mut rng).unwrap().is_none());
+    }
+
+    // ---- Boucle complète (jouet, déterministe, sans cargo) ---- //
+
+    fn toy_workspace(tag: &str) -> PathBuf {
+        let d = fresh_dir(tag);
+        write(&d, "src/level.txt", "level = 0");
+        d
+    }
+
+    fn read_level(root: &Path) -> i64 {
+        std::fs::read_to_string(root.join("src/level.txt"))
+            .unwrap()
+            .trim()
+            .strip_prefix("level = ")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(-1)
+    }
+
+    struct Incrementer;
+    impl Proposer for Incrementer {
+        fn propose(&self, ctx: &ImprovementContext<'_>, _rng: &mut Rng) -> Result<Option<Proposal>> {
+            let cur = read_level(ctx.workspace_root);
+            let next = cur + 1;
+            Ok(Some(Proposal {
+                patch: Patch::new(
+                    "src/level.txt",
+                    format!("level = {cur}"),
+                    format!("level = {next}"),
+                ),
+                rationale: format!("raise level to {next}"),
+            }))
+        }
+    }
+
+    fn level_evaluator() -> ClosureEvaluator<impl Fn(&Path) -> Fitness> {
+        ClosureEvaluator::new(|root: &Path| fit(true, 1, 0, read_level(root) as f64))
+    }
+
+    fn engine(ws: &Path) -> DgmEngine<Incrementer, ClosureEvaluator<impl Fn(&Path) -> Fitness>> {
+        let archive = Archive::with_root(fit(true, 1, 0, 0.0));
+        let config = DgmConfig::new(ws, "raise the level");
+        DgmEngine::new(archive, Incrementer, level_evaluator(), config, 1)
+    }
+
+    #[test]
+    fn loop_accumulates_only_real_improvements() {
+        let ws = toy_workspace("acc");
+        let mut eng = engine(&ws);
+        eng.run(5).unwrap();
+        assert!(eng.archive().len() >= 2, "no improvement was archived");
+        let best = eng.best().unwrap();
+        assert!(best.fitness.as_ref().unwrap().score >= 1.0);
+        // L'arbre vivant n'est jamais muté par la boucle.
+        assert_eq!(read_level(&ws), 0);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    struct Saboteur;
+    impl Proposer for Saboteur {
+        fn propose(&self, _ctx: &ImprovementContext<'_>, _rng: &mut Rng) -> Result<Option<Proposal>> {
+            Ok(Some(Proposal {
+                patch: Patch::new("src/level.txt", "level = 0", "level = 0 BROKEN"),
+                rationale: "sabotage".to_string(),
+            }))
+        }
+    }
+
+    #[test]
+    fn regressions_are_rejected() {
+        let ws = toy_workspace("sab");
+        let evaluator = ClosureEvaluator::new(|root: &Path| {
+            let txt = std::fs::read_to_string(root.join("src/level.txt")).unwrap_or_default();
+            if txt.contains("BROKEN") {
+                Fitness::broken("syntax error")
+            } else {
+                fit(true, 1, 0, 0.0)
+            }
+        });
+        let mut eng = DgmEngine::new(
+            Archive::with_root(fit(true, 1, 0, 0.0)),
+            Saboteur,
+            evaluator,
+            DgmConfig::new(&ws, "break things"),
+            1,
+        );
+        eng.run(4).unwrap();
+        assert_eq!(eng.archive().len(), 1, "nothing should be accepted");
+        assert!(eng.history().iter().all(|o| !o.accepted()));
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn run_is_seed_deterministic() {
+        let ws1 = toy_workspace("det1");
+        let ws2 = toy_workspace("det2");
+        let mut a = engine(&ws1);
+        let mut b = engine(&ws2);
+        a.run(5).unwrap();
+        b.run(5).unwrap();
+        assert_eq!(a.archive().len(), b.archive().len());
+        assert_eq!(
+            a.best().unwrap().fitness.as_ref().unwrap().score,
+            b.best().unwrap().fitness.as_ref().unwrap().score
+        );
+        // IDs déterministes : la meilleure variante a la même identité.
+        assert_eq!(a.best().unwrap().id, b.best().unwrap().id);
+        let _ = std::fs::remove_dir_all(&ws1);
+        let _ = std::fs::remove_dir_all(&ws2);
+    }
+}

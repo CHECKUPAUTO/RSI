@@ -37,9 +37,13 @@ where
     F: Fn(u64) -> RSIAgent + Sync,
 {
     let size = size.max(1);
+    // Membre marqué invalide (jamais sélectionné, `SI_safe = -∞`) : sert de
+    // repli quand un membre panique ou ne produit aucun rapport.
+    let invalid = |seed: u64| SwarmMember { seed, si_global: 0.0, si_safe: f64::NEG_INFINITY };
     let members: Vec<SwarmMember> = std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..size)
+        let handles: Vec<(u64, _)> = (0..size)
             .map(|i| {
+                let seed = base_seed + i as u64;
                 let build = &build;
                 scope.spawn(move || {
                     let seed = base_seed + i as u64;
@@ -75,6 +79,25 @@ where
                 si_global: 0.0,
                 si_safe: f64::NEG_INFINITY,
             }))
+                let handle = scope.spawn(move || {
+                    let mut agent = build(seed);
+                    let reports = agent.run(steps);
+                    match reports.last() {
+                        Some(last) => {
+                            SwarmMember { seed, si_global: last.si_global, si_safe: last.si_safe }
+                        }
+                        // run(0) ⇒ aucun rapport : membre invalide plutôt que panic.
+                        None => invalid(seed),
+                    }
+                });
+                (seed, handle)
+            })
+            .collect();
+        // Un membre qui panique est *isolé* (marqué invalide) au lieu de faire
+        // s'effondrer tout l'essaim via `join().unwrap()`.
+        handles
+            .into_iter()
+            .map(|(seed, h)| h.join().unwrap_or_else(|_| invalid(seed)))
             .collect()
     });
 
@@ -117,5 +140,14 @@ mod tests {
             assert_eq!(x.seed, y.seed);
             assert!((x.si_global - y.si_global).abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn swarm_with_zero_steps_does_not_panic() {
+        // run(0) ⇒ aucun rapport : les membres sont marqués invalides
+        // (SI_safe = -∞) au lieu de faire paniquer l'essaim via `unwrap()`.
+        let res = run_swarm_demo(3, 7, 0);
+        assert_eq!(res.members.len(), 3);
+        assert!(res.members.iter().all(|m| m.si_safe == f64::NEG_INFINITY));
     }
 }

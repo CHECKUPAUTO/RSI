@@ -8,3 +8,6 @@ forge_checkpoint.json
 
 # artefacts de la démo rsi-full
 rsi_full_trajectory.*
+
+# secrets locaux (cf. .env.example) — ne jamais committer
+.env
