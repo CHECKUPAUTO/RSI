@@ -211,6 +211,10 @@ cargo build --release --bins
 Voir le guide complet : [`docs/INTEGRATION.md`](docs/INTEGRATION.md)
 (API, outils MCP, schémas, boucle d'auto-amélioration côté LLM, auto-connexion).
 
+**Brancher un LLM sur le moteur d'ascension** (Ollama local / Claude, boucle
+autonome ou interactive via MCP, sous garde-fous) :
+[`docs/LLM_INTEGRATION.md`](docs/LLM_INTEGRATION.md).
+
 ### Paper scientifique
 
 Formalisation, implémentation et résultats expérimentaux :
