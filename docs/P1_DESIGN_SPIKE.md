@@ -342,6 +342,14 @@ Le LLM est une *source de propositions sous contrainte*, pas un pilote.
   dépendance**. `/api/generate` non-streamé sur `127.0.0.1:11434` (réglable).
   Parties pures (`build_request` / `parse_response`) testées hors-ligne
   (4 tests) ; l'appel réseau réel reste à valider sur une machine avec Ollama.
-- ⏭️ **Prochaines briques** : premier domaine réel « prompts » (P1.3) ; outils
+- ✅ **Premier domaine réel câblé sur le LLM** : `SymbolicSynthesis`
+  (synthèse symbolique) implémente `LlmRefineTask`. Ajouts : parseur
+  `Expr::parse` (texte → AST, précédence, garde de profondeur), held-out
+  réservé (`from_target_split`, ~30 %) pour `score_heldout`, `safety_check`
+  bornant la taille d'AST. Sandbox inchangé (AST interprété, jamais exécuté).
+  Tests hors-ligne : round-trip parseur, infixe naturel, rejet d'entrées
+  hostiles, **synthèse pilotée par un mock LLM** (converge sur `x²+1`),
+  rejet d'un AST surdimensionné par `safety_check`.
+- ⏭️ **Prochaines briques** : domaine « prompts »/« config » (P1.3) ; outils
   MCP `rsi_incumbent` / `rsi_propose` / `rsi_evaluate` (P1.4) ; backend
   `llm-claude` (API, feature-gated).
