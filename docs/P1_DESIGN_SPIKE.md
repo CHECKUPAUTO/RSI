@@ -258,24 +258,42 @@ P1.2 et concentre tout le risque d'exécution).
 | 2 | Transport LLM | ✅ **RSI client du LLM** — le moteur orchestre la boucle, appelle le LLM comme une API. Cohérent avec le contrat §0 (le LLM ne pilote rien). |
 | 3 | WASM en P1 ou P2 ? | ✅ **P2** — P1 = Prompts + Configs (zéro exécution). Le sandbox WASM et le domaine « code » arrivent en P2. |
 | 5 | Licence | ✅ **Double licence** — appliquée : `Cargo.toml` déclare désormais `PolyForm-Noncommercial-1.0.0 OR LicenseRef-Commercial` (crate principal + vendor), cohérent avec `LICENSING.md` / README. |
-| 1 | Fournisseur / modèle LLM | ⏳ **non tranché** → défaut proposé ci-dessous. |
+| 1 | Fournisseur / modèle LLM | ✅ **Ollama (local) par défaut, Claude sélectionnable** — voir §8.1. |
 | 4 | Politique held-out | ⏳ **à confirmer** → défaut proposé ci-dessous. |
 
-### 8.1 Défaut proposé — fournisseur / modèle (question 1)
+### 8.1 Décision — fournisseur / modèle (question 1)
 
-Faute de préférence exprimée, défaut recommandé (le plus capable, ajustable) :
+**Backend LLM interchangeable, modèle local Ollama par défaut.** Chaque
+utilisateur choisit son backend en configuration ; aucune dépendance dure à un
+fournisseur cloud.
 
-- **API Claude**, en configuration **deux niveaux** pour maîtriser le coût (§2) :
-  - **proposition (volume)** : modèle rapide/économique (p. ex. Haiku 4.5 ou
-    Sonnet 4.6) pour générer les *k* candidats batchés — c'est 90 % des appels ;
-  - **arbitrage difficile** (plateau, candidats serrés) : modèle fort
-    (Opus 4.8) ponctuellement.
-- **Plafond de coût par run** : défaut **≤ 1 $/run** et **≤ 100 appels** (cf.
-  critère d'acceptation §7.3), réglable via le `Guard` budgétaire.
-- Modèle et plafond exposés en config (cf. P3.3 `RsiConfig`), jamais en dur.
+```rust
+/// Abstraction du producteur de propositions. Le moteur ne connaît que ça ;
+/// il ignore quel modèle tourne derrière. Aucun appel réseau dans le cœur.
+pub trait LlmClient {
+    /// Rend `k` propositions (texte brut) pour un prompt donné, sous budget.
+    fn propose(&self, prompt: &str, k: usize) -> Result<Vec<String>, LlmError>;
+}
+```
 
-> À confirmer : modèle(s) exact(s) et plafond de coût acceptable. Tout le reste
-> du design est agnostique au fournisseur (un trait `LlmClient` isole l'API).
+Backends prévus (sélection par `RsiConfig`, cf. P3.3) :
+
+| Backend | Statut | Usage |
+|---|---|---|
+| **Ollama (local)** | **défaut** | HTTP local `http://localhost:11434` ; modèle au choix (`llama3.x`, `qwen2.5`, `codestral`…). Zéro coût API, données locales, hors-ligne. |
+| **Claude (API)** | sélectionnable | pour qui veut la capacité maximale ; clé API requise. Modèle réglable (Opus/Sonnet/Haiku). |
+| **Mock déterministe** | dev/test | `LlmClient` factice (propositions scriptées) pour tester `ascend_llm` **hors-ligne et de façon reproductible** — c'est la première brique à écrire en P1.1. |
+
+**Implication budget (§2)** : avec Ollama local, le coût *monétaire* tombe à ~0 ;
+le `Guard` budgétaire borne alors surtout les **appels** et le **wall-clock**
+(latence d'inférence locale), pas les dollars. Le plafond `max_tokens` reste
+utile pour la fenêtre de contexte. Avec le backend Claude, le plafond
+coût/tokens redevient pertinent. Les deux régimes passent par le même
+`Guard` budgétaire.
+
+> Le cœur reste **std-only** : les backends (Ollama HTTP, Claude API) vivent
+> derrière une **feature optionnelle** (`llm-ollama`, `llm-claude`) et n'entrent
+> jamais dans le cœur ni dans le `Mock`.
 
 ### 8.2 Défaut proposé — held-out (question 4)
 
