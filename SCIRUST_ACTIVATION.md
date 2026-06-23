@@ -6,23 +6,23 @@ répète`, élitiste/borné/reproductible) de **deux** façons :
 | Mode | Module | Dépendance | Statut |
 |------|--------|-----------|--------|
 | **Stand-in intégré** | [`src/ascent.rs`](src/ascent.rs) | aucune (std) | ✅ actif par défaut, testé |
-| **Moteur réel** | [`src/scirust_bridge.rs`](src/scirust_bridge.rs) | `scirust-rsi` (vendorisé) | ✅ `--features scirust` |
+| **Moteur réel** | [`src/scirust_bridge.rs`](src/scirust_bridge.rs) | `scirust-rsi` (git amont) | ✅ `--features scirust` |
 
 ## Activer le moteur réel
 
-Le crate `scirust-rsi` est **vendorisé** dans [`vendor/scirust-rsi`](vendor/scirust-rsi)
-en dépendance `path` (aucun accès réseau requis ; ne tire que `rand`, déjà dans
-l'arbre de RSI). La feature est déjà câblée dans `Cargo.toml` :
+Le crate `scirust-rsi` est consommé en **dépendance git amont**
+(`CHECKUPAUTO/scirust`, sous-crate `scirust-rsi`). La feature est déjà câblée :
 
 ```toml
 [features]
 scirust = ["dep:scirust-rsi", "dep:rand"]
 
 [dependencies]
-scirust-rsi = { path = "vendor/scirust-rsi", optional = true }
+scirust-rsi = { git = "https://github.com/CHECKUPAUTO/scirust", optional = true }
 ```
 
-Il suffit donc de :
+Activation (nécessite un accès réseau à `github.com` — niveau **Trusted** en
+session cloud, cf. [`docs/WEB_ENV.md`](docs/WEB_ENV.md)) :
 
 ```bash
 cargo run    --release --features scirust --example self_improve_real
@@ -30,13 +30,11 @@ cargo test   --features scirust
 cargo clippy --features scirust --all-targets
 ```
 
-> ⚠️ **`vendor/scirust-rsi` est une reconstruction API-compatible** de l'API
-> publiée (cf. en-tête + `INTEGRATION.md`), faite pour débloquer le build
-> hors-ligne. Elle respecte exactement le contrat public mais n'est **pas** les
-> octets amont. Pour passer au crate amont (recevoir les mises à jour), voir
-> ci-dessous.
+> ✅ **Validé de bout en bout** : `cargo test --features scirust` compile le vrai
+> crate amont (`scirust-rsi v0.1.0 @ CHECKUPAUTO/scirust`) et passe les 131 tests
+> sans aucune modification du bridge — l'API ci-dessous correspond exactement.
 
-## API ciblée (vérifiée sur l'en-tête réel)
+## API ciblée (vérifiée contre le crate amont)
 
 - `pub type Fitness = f64;` (plus grand = mieux) → aucun constructeur, le score
   scalaire **est** la fitness.
@@ -47,20 +45,7 @@ cargo clippy --features scirust --all-targets
 - `Report { iterations, accepted, best_fitness, history, stop_reason }`,
   `Report::is_monotone()`, `Report::total_gain()`.
 - Aussi exposés : `ascend(...)` (fonction libre), `bench::{sphere, rastrigin,
-  rosenbrock}`, et les pilotes `star::Star`, `expert_iteration::ExpertIteration`,
-  `pbt::Pbt`, `evo::OnePlusLambda`.
-
-## Passer au crate amont (`CHECKUPAUTO/scirust`)
-
-Quand le dépôt + le réseau sont ouverts dans l'environnement web, remplacer la
-dépendance `path` par l'amont — l'API est identique, aucun changement de code :
-
-```toml
-# git-dependency
-scirust-rsi = { git = "https://github.com/CHECKUPAUTO/scirust", branch = "master", optional = true }
-# ou installeur vendorisé amont : bash vendor_scirust_rsi.sh   (recrée vendor/scirust-rsi)
-# variante umbrella : scirust = { git = … } puis `use scirust::rsi::{…}`
-```
+  rosenbrock}`, et les pilotes `star`, `expert_iteration`, `pbt`, `evo`, `llm`.
 
 ## Garde-fous (identiques dans les deux modes)
 

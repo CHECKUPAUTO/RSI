@@ -280,13 +280,11 @@ stabilise (patience), 100 % des cas de test réussis, `is_monotone() == true`.
 >   et pilote la boucle avec `SelfRefiner::new(seed).run(&task, &Guard)`,
 >   conformément à `scirust-rsi/INTEGRATION.md`.
 >
-> Le moteur réel est **vendorisé** dans [`vendor/scirust-rsi`](vendor/scirust-rsi)
-> (dépendance `path`, hors-ligne, ne tire que `rand`) — c'est une reconstruction
-> API-compatible de l'API publiée, le dépôt `CHECKUPAUTO/scirust` n'étant pas
-> joignable depuis cet environnement (une git-dependency injoignable casse la
-> résolution du lockfile, même en `optional`). Il s'active directement :
-> `cargo run --features scirust --release --example self_improve_real`. Pour
-> repasser à l'amont (git-dependency / installeur vendorisé), voir
+> Le moteur réel est consommé en **dépendance git amont**
+> (`scirust-rsi = { git = "https://github.com/CHECKUPAUTO/scirust" }`) — validé
+> de bout en bout : `cargo test --features scirust` compile le vrai crate et
+> passe les 131 tests sans modifier le bridge. Activation (réseau requis) :
+> `cargo run --features scirust --release --example self_improve_real`. Détails :
 > [`SCIRUST_ACTIVATION.md`](SCIRUST_ACTIVATION.md).
 
 ## Architecture
