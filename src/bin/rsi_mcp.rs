@@ -222,10 +222,10 @@ fn tools_list() -> Json {
             "Crée une session de raffinement piloté par LLM. Le LLM propose des candidats (texte) ; \
              le serveur les évalue en sandbox et n'adopte que les strictement meilleurs et sûrs — \
              le LLM ne contrôle aucun garde-fou. Deux domaines : 'synthesis' (expressions \
-             arithmétiques) et 'tuning' (hyperparamètres JSON).",
+             arithmétiques), 'tuning' (hyperparamètres JSON) et 'prompt' (prompt texte).",
             props(&[
                 id(),
-                ("domain", prop("string", "Domaine: 'synthesis' (défaut) ou 'tuning'.")),
+                ("domain", prop("string", "Domaine: 'synthesis' (défaut), 'tuning' ou 'prompt'.")),
                 ("target", prop("string", "[synthesis] cible: 'quadratic' (x²+1), 'linear' (2x-1), 'cubic' (x³-x).")),
                 ("lo", prop("number", "[synthesis] borne basse d'échantillonnage (défaut -3).")),
                 ("hi", prop("number", "[synthesis] borne haute (défaut 3).")),

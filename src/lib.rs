@@ -65,6 +65,7 @@ pub mod measured_substrate;
 pub mod memory;
 pub mod meta;
 pub mod plot;
+pub mod prompt;
 pub mod tasks;
 #[cfg(feature = "octasoma")]
 pub mod octasoma_memory;

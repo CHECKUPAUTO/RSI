@@ -375,5 +375,13 @@ Le LLM est une *source de propositions sous contrainte*, pas un pilote.
   `tuning`). Les outils `rsi_incumbent`/`rsi_evaluate`/`rsi_propose` pilotent les
   deux domaines de façon uniforme, le serveur restant autoritaire. Vérifié
   end-to-end (tuning : config adoptée, config hors-bornes rejetée).
-- ⏭️ **Prochaines briques** : doc d'intégration `docs/LLM_INTEGRATION.md` ;
-  transport TLS turnkey pour Claude (réseau) ; domaine « prompts ».
+- ✅ **3ᵉ domaine — prompts** (`PromptOpt`, `src/prompt.rs`) : optimisation de
+  prompt (texte), objectif synthétique par cues (raisonnement/exemple/format),
+  held-out décalé, `safety_check` rejetant longueur excessive **et marqueurs
+  d'injection**. Exposé via MCP (`domain: "prompt"`). Vérifié end-to-end
+  (injection rejetée, bon prompt adopté). Les 3 points du spectre texte → config
+  → code sont couverts (code/WASM = P2).
+- ✅ **Docs** : `docs/LLM_INTEGRATION.md` (guide d'intégration) et
+  `docs/SAFETY.md` (garde-fous, garanties vs limites).
+- ⏭️ **Reste** : transport TLS turnkey pour Claude (réseau) ; sandbox code/WASM
+  (P2) ; vérification formelle (P0.4).
