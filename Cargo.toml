@@ -3,7 +3,11 @@ name = "rsi"
 version = "0.10.0"
 edition = "2021"
 description = "Recursive Self-Improvement — implémentation Rust du système géométrique unifié (v9)"
-license = "PolyForm-Noncommercial-1.0.0"
+# Double licence (cf. LICENSING.md) : gratuit en usage non commercial sous
+# PolyForm-Noncommercial-1.0.0, licence commerciale séparée sinon. L'expression
+# SPDX « A OR B » reflète le choix laissé à l'utilisateur (LicenseRef pour la
+# licence commerciale, hors liste SPDX standard).
+license = "PolyForm-Noncommercial-1.0.0 OR LicenseRef-Commercial"
 authors = ["Tarek Zekriti / CHECKUPAUTO"]
 
 [[bin]]

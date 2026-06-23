@@ -251,19 +251,47 @@ P1.2 et concentre tout le risque d'exécution).
 
 ---
 
-## 8. Questions ouvertes (à trancher avec le porteur produit)
+## 8. Questions ouvertes — arbitrages
 
-1. **Fournisseur LLM** : API Claude (par défaut, le plus capable) — confirmer.
-   Quel modèle par défaut, quel plafond de coût acceptable par run ?
-2. **Transport** : le LLM appelle le serveur MCP RSI (RSI = serveur), ou RSI
-   appelle le LLM (RSI = client d'une API) ? Les deux topologies sont possibles ;
-   elles changent qui orchestre la boucle. *Recommandation : RSI client du LLM*
-   pour garder le contrôle de boucle côté moteur (cohérent avec le contrat §0).
-3. **WASM en P1 ou P2 ?** Le spike suppose Prompts+Configs en P1, Code (WASM) en
-   P2. Confirmer ce découpage.
-4. **Held-out** : taille, source, politique de rotation par domaine ?
-5. **Licence** (hérité, P3.6) : double licence réelle ou mono ? Bloque la
-   commercialisation, à décider avant la 1.0.
+| # | Question | Décision |
+|---|---|---|
+| 2 | Transport LLM | ✅ **RSI client du LLM** — le moteur orchestre la boucle, appelle le LLM comme une API. Cohérent avec le contrat §0 (le LLM ne pilote rien). |
+| 3 | WASM en P1 ou P2 ? | ✅ **P2** — P1 = Prompts + Configs (zéro exécution). Le sandbox WASM et le domaine « code » arrivent en P2. |
+| 5 | Licence | ✅ **Double licence** — appliquée : `Cargo.toml` déclare désormais `PolyForm-Noncommercial-1.0.0 OR LicenseRef-Commercial` (crate principal + vendor), cohérent avec `LICENSING.md` / README. |
+| 1 | Fournisseur / modèle LLM | ⏳ **non tranché** → défaut proposé ci-dessous. |
+| 4 | Politique held-out | ⏳ **à confirmer** → défaut proposé ci-dessous. |
+
+### 8.1 Défaut proposé — fournisseur / modèle (question 1)
+
+Faute de préférence exprimée, défaut recommandé (le plus capable, ajustable) :
+
+- **API Claude**, en configuration **deux niveaux** pour maîtriser le coût (§2) :
+  - **proposition (volume)** : modèle rapide/économique (p. ex. Haiku 4.5 ou
+    Sonnet 4.6) pour générer les *k* candidats batchés — c'est 90 % des appels ;
+  - **arbitrage difficile** (plateau, candidats serrés) : modèle fort
+    (Opus 4.8) ponctuellement.
+- **Plafond de coût par run** : défaut **≤ 1 $/run** et **≤ 100 appels** (cf.
+  critère d'acceptation §7.3), réglable via le `Guard` budgétaire.
+- Modèle et plafond exposés en config (cf. P3.3 `RsiConfig`), jamais en dur.
+
+> À confirmer : modèle(s) exact(s) et plafond de coût acceptable. Tout le reste
+> du design est agnostique au fournisseur (un trait `LlmClient` isole l'API).
+
+### 8.2 Défaut proposé — held-out (question 4)
+
+- **Split** : 70 % train / 30 % held-out par domaine, **gelé pour tout le run**,
+  séparé par graine déterministe (reproductible).
+- **Source** : le held-out vient du **même corpus** que le train mais en
+  partition disjointe (`tasks.rs` fournit déjà `builtin()`/`extended()` —
+  partitionner ces ensembles).
+- **Rotation** : seul le **sous-ensemble train** effectivement évalué par
+  `score()` tourne (ré-échantillonné tous les N adoptions) ; le held-out, lui,
+  ne tourne **jamais** (sinon il fuit dans la boucle).
+- **Mesure** : held-out évalué aux checkpoints + en fin de run uniquement.
+
+> À confirmer : ratio 70/30, et si certains domaines exigent un held-out
+> *externe* (issu d'un autre corpus) pour une garantie anti-contamination plus
+> forte.
 
 ---
 
