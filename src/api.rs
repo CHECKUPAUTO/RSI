@@ -30,6 +30,7 @@ use crate::state::{CognitiveState, Dims};
 use crate::substrate::Substrate;
 use crate::surface::IntelligenceSurface;
 use crate::synthesis::{Expr, SymbolicSynthesis};
+use crate::tuning::{ConfigTuning, TuneConfig};
 use crate::{report, surface};
 
 /// Résultat d'une commande : un JSON, ou un message d'erreur.
@@ -71,19 +72,189 @@ struct Session {
     config: Json,
 }
 
+/// Issue de l'examen d'une **proposition** par le serveur (autoritaire).
+enum ProposeStatus {
+    Unparsed(String),
+    Unsafe(String),
+    Adopted { pretty: String, score: f64 },
+    Worse { pretty: String, score: f64 },
+}
+
+/// Résultat d'une **évaluation** (sonde, sans adoption).
+#[derive(Default)]
+struct EvalOutcome {
+    parseable: bool,
+    error: Option<String>,
+    pretty: Option<String>,
+    size: Option<usize>,
+    score: Option<f64>,
+    heldout: Option<f64>,
+    safe: Option<bool>,
+    safety_reason: Option<String>,
+    would_adopt: Option<bool>,
+}
+
+/// Domaine de raffinement vu par la couche MCP (object-safe) : encapsule
+/// l'incumbent typé et les opérations autoritaires (parse + sûreté + score +
+/// adoption élitiste). Une implémentation par domaine concret.
+trait RefineDomain {
+    fn domain(&self) -> &'static str;
+    fn incumbent_pretty(&self) -> String;
+    fn incumbent_score(&self) -> f64;
+    fn incumbent_heldout(&self) -> f64;
+    fn incumbent_size(&self) -> usize;
+    fn heldout_cases(&self) -> usize;
+    /// Évalue un candidat texte **sans l'adopter**.
+    fn evaluate(&self, text: &str) -> EvalOutcome;
+    /// Examine une proposition : parse → sûreté → score → adoption si
+    /// **strictement** meilleure ET sûre.
+    fn propose_one(&mut self, text: &str) -> ProposeStatus;
+}
+
 /// Session de **raffinement piloté par LLM** : le client (un LLM) lit
 /// l'incumbent, propose des candidats *en texte* ; le serveur reste autoritaire
-/// (il parse, applique `safety_check`, score, et n'adopte qu'élitistement —
-/// strictement meilleur ET sûr). Le client ne contrôle aucun garde-fou.
+/// (parse, `safety_check`, score, adoption élitiste). Le client ne contrôle
+/// aucun garde-fou. Le domaine concret est polymorphe ([`RefineDomain`]).
 struct RefineSession {
-    task: SymbolicSynthesis,
-    incumbent: Expr,
-    target: String,
+    domain: Box<dyn RefineDomain>,
+    descriptor: String,
     proposals_seen: usize,
     accepted: usize,
     rejected_unsafe: usize,
     rejected_worse: usize,
     rejected_unparsed: usize,
+}
+
+/// Domaine concret : synthèse symbolique (`Cand = Expr`).
+struct SynthDomain {
+    task: SymbolicSynthesis,
+    incumbent: Expr,
+}
+
+impl RefineDomain for SynthDomain {
+    fn domain(&self) -> &'static str {
+        "synthesis"
+    }
+    fn incumbent_pretty(&self) -> String {
+        self.incumbent.pretty()
+    }
+    fn incumbent_score(&self) -> f64 {
+        self.task.score(&self.incumbent)
+    }
+    fn incumbent_heldout(&self) -> f64 {
+        self.task.score_heldout(&self.incumbent)
+    }
+    fn incumbent_size(&self) -> usize {
+        self.incumbent.size()
+    }
+    fn heldout_cases(&self) -> usize {
+        self.task.heldout_len()
+    }
+    fn evaluate(&self, text: &str) -> EvalOutcome {
+        match Expr::parse(text) {
+            Err(e) => EvalOutcome { parseable: false, error: Some(e), ..Default::default() },
+            Ok(expr) => {
+                let cur = self.task.score(&self.incumbent);
+                let fit = self.task.score(&expr);
+                let safe = self.task.safety_check(&expr);
+                EvalOutcome {
+                    parseable: true,
+                    pretty: Some(expr.pretty()),
+                    size: Some(expr.size()),
+                    score: Some(fit),
+                    heldout: Some(self.task.score_heldout(&expr)),
+                    safe: Some(safe.is_ok()),
+                    would_adopt: Some(safe.is_ok() && fit > cur),
+                    safety_reason: safe.err().map(|v| v.0),
+                    error: None,
+                }
+            }
+        }
+    }
+    fn propose_one(&mut self, text: &str) -> ProposeStatus {
+        match Expr::parse(text) {
+            Err(e) => ProposeStatus::Unparsed(e),
+            Ok(expr) => {
+                if let Err(v) = self.task.safety_check(&expr) {
+                    return ProposeStatus::Unsafe(v.0);
+                }
+                let fit = self.task.score(&expr);
+                if fit > self.task.score(&self.incumbent) {
+                    let pretty = expr.pretty();
+                    self.incumbent = expr;
+                    ProposeStatus::Adopted { pretty, score: fit }
+                } else {
+                    ProposeStatus::Worse { pretty: expr.pretty(), score: fit }
+                }
+            }
+        }
+    }
+}
+
+/// Domaine concret : réglage de configuration (`Cand = TuneConfig`).
+struct TuneDomain {
+    task: ConfigTuning,
+    incumbent: TuneConfig,
+}
+
+impl RefineDomain for TuneDomain {
+    fn domain(&self) -> &'static str {
+        "tuning"
+    }
+    fn incumbent_pretty(&self) -> String {
+        self.incumbent.to_json_string()
+    }
+    fn incumbent_score(&self) -> f64 {
+        self.task.score(&self.incumbent)
+    }
+    fn incumbent_heldout(&self) -> f64 {
+        self.task.score_heldout(&self.incumbent)
+    }
+    fn incumbent_size(&self) -> usize {
+        3 // nombre d'hyperparamètres
+    }
+    fn heldout_cases(&self) -> usize {
+        0 // objectif analytique : pas de cas held-out discrets
+    }
+    fn evaluate(&self, text: &str) -> EvalOutcome {
+        match TuneConfig::parse(text) {
+            Err(e) => EvalOutcome { parseable: false, error: Some(e), ..Default::default() },
+            Ok(cfg) => {
+                let cur = self.task.score(&self.incumbent);
+                let fit = self.task.score(&cfg);
+                let safe = self.task.safety_check(&cfg);
+                EvalOutcome {
+                    parseable: true,
+                    pretty: Some(cfg.to_json_string()),
+                    size: Some(3),
+                    score: Some(fit),
+                    heldout: Some(self.task.score_heldout(&cfg)),
+                    safe: Some(safe.is_ok()),
+                    would_adopt: Some(safe.is_ok() && fit > cur),
+                    safety_reason: safe.err().map(|v| v.0),
+                    error: None,
+                }
+            }
+        }
+    }
+    fn propose_one(&mut self, text: &str) -> ProposeStatus {
+        match TuneConfig::parse(text) {
+            Err(e) => ProposeStatus::Unparsed(e),
+            Ok(cfg) => {
+                if let Err(v) = self.task.safety_check(&cfg) {
+                    return ProposeStatus::Unsafe(v.0);
+                }
+                let fit = self.task.score(&cfg);
+                if fit > self.task.score(&self.incumbent) {
+                    let pretty = cfg.to_json_string();
+                    self.incumbent = cfg;
+                    ProposeStatus::Adopted { pretty, score: fit }
+                } else {
+                    ProposeStatus::Worse { pretty: cfg.to_json_string(), score: fit }
+                }
+            }
+        }
+    }
 }
 
 /// Gestionnaire de sessions RSI piloté par commandes JSON.
@@ -317,32 +488,44 @@ impl RsiApi {
             .ok_or_else(|| format!("session de raffinement inconnue : '{id}' (appelez d'abord 'refine_new')"))
     }
 
-    /// Crée une session de raffinement (domaine de synthèse symbolique).
+    /// Crée une session de raffinement. `domain`: 'synthesis' (défaut) ou 'tuning'.
     fn cmd_refine_new(&mut self, params: &Json) -> ApiResult {
         let id = Self::session_id(params);
         if !self.refines.contains_key(&id) && self.refines.len() >= MAX_SESSIONS {
             return Err(format!("limite de {MAX_SESSIONS} sessions de raffinement atteinte"));
         }
-        let target = params
-            .get("target")
-            .and_then(|v| v.as_str())
-            .unwrap_or("quadratic")
-            .to_string();
-        let f = target_fn(&target)?;
-        let lo = params.get("lo").and_then(|v| v.as_f64()).unwrap_or(-3.0);
-        let hi = params.get("hi").and_then(|v| v.as_f64()).unwrap_or(3.0);
-        if !lo.is_finite() || !hi.is_finite() || hi <= lo {
-            return Err("intervalle invalide : exiger lo < hi finis".into());
-        }
-        let n = bounded(params, "n", 30, 4, MAX_REFINE_POINTS);
-        let seed = params.get("seed").and_then(|v| v.as_u64()).unwrap_or(2026);
+        let domain_name = params.get("domain").and_then(|v| v.as_str()).unwrap_or("synthesis");
 
-        let task = SymbolicSynthesis::from_target_split(f, lo, hi, n, seed);
-        let incumbent = task.seed_candidate();
+        let (domain, descriptor): (Box<dyn RefineDomain>, String) = match domain_name {
+            "synthesis" => {
+                let target = params
+                    .get("target")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("quadratic")
+                    .to_string();
+                let f = target_fn(&target)?;
+                let lo = params.get("lo").and_then(|v| v.as_f64()).unwrap_or(-3.0);
+                let hi = params.get("hi").and_then(|v| v.as_f64()).unwrap_or(3.0);
+                if !lo.is_finite() || !hi.is_finite() || hi <= lo {
+                    return Err("intervalle invalide : exiger lo < hi finis".into());
+                }
+                let n = bounded(params, "n", 30, 4, MAX_REFINE_POINTS);
+                let seed = params.get("seed").and_then(|v| v.as_u64()).unwrap_or(2026);
+                let task = SymbolicSynthesis::from_target_split(f, lo, hi, n, seed);
+                let incumbent = task.seed_candidate();
+                (Box::new(SynthDomain { task, incumbent }), format!("synthesis:{target}"))
+            }
+            "tuning" => {
+                let task = ConfigTuning::new();
+                let incumbent = task.seed_candidate();
+                (Box::new(TuneDomain { task, incumbent }), "tuning".to_string())
+            }
+            other => return Err(format!("domaine inconnu : '{other}' (synthesis|tuning)")),
+        };
+
         let s = RefineSession {
-            task,
-            incumbent,
-            target,
+            domain,
+            descriptor,
             proposals_seen: 0,
             accepted: 0,
             rejected_unsafe: 0,
@@ -378,30 +561,37 @@ impl RsiApi {
             .ok_or("paramètre 'candidate' (texte de l'expression) requis")?
             .to_string();
         let s = self.refine_mut(&id)?;
+        let incumbent_score = s.domain.incumbent_score();
+        let ev = s.domain.evaluate(&cand);
 
         let mut out = Json::obj();
-        out.set("ok", Json::Bool(true)).set("id", Json::Str(id));
-        match Expr::parse(&cand) {
-            Err(e) => {
-                out.set("parseable", Json::Bool(false)).set("error", Json::Str(e));
-            }
-            Ok(expr) => {
-                let cur = s.task.score(&s.incumbent);
-                let fit = s.task.score(&expr);
-                let ho = s.task.score_heldout(&expr);
-                let safe = s.task.safety_check(&expr);
-                out.set("parseable", Json::Bool(true))
-                    .set("pretty", Json::Str(expr.pretty()))
-                    .set("size", Json::Num(expr.size() as f64))
-                    .set("score", Json::Num(fit))
-                    .set("heldout", Json::Num(ho))
-                    .set("incumbent_score", Json::Num(cur))
-                    .set("safe", Json::Bool(safe.is_ok()))
-                    .set("would_adopt", Json::Bool(safe.is_ok() && fit > cur));
-                if let Err(v) = safe {
-                    out.set("safety_reason", Json::Str(v.0));
-                }
-            }
+        out.set("ok", Json::Bool(true))
+            .set("id", Json::Str(id))
+            .set("parseable", Json::Bool(ev.parseable))
+            .set("incumbent_score", Json::Num(incumbent_score));
+        if let Some(e) = ev.error {
+            out.set("error", Json::Str(e));
+        }
+        if let Some(p) = ev.pretty {
+            out.set("pretty", Json::Str(p));
+        }
+        if let Some(n) = ev.size {
+            out.set("size", Json::Num(n as f64));
+        }
+        if let Some(v) = ev.score {
+            out.set("score", Json::Num(v));
+        }
+        if let Some(v) = ev.heldout {
+            out.set("heldout", Json::Num(v));
+        }
+        if let Some(b) = ev.safe {
+            out.set("safe", Json::Bool(b));
+        }
+        if let Some(b) = ev.would_adopt {
+            out.set("would_adopt", Json::Bool(b));
+        }
+        if let Some(r) = ev.safety_reason {
+            out.set("safety_reason", Json::Str(r));
         }
         Ok(out)
     }
@@ -435,7 +625,6 @@ impl RsiApi {
         }
 
         let s = self.refine_mut(&id)?;
-        let mut cur = s.task.score(&s.incumbent);
         let mut adopted_any = false;
         let mut results: Vec<Json> = Vec::with_capacity(raw.len());
 
@@ -443,33 +632,29 @@ impl RsiApi {
             s.proposals_seen += 1;
             let mut item = Json::obj();
             item.set("input", Json::Str(r.clone()));
-            match Expr::parse(r) {
-                Err(e) => {
+            match s.domain.propose_one(r) {
+                ProposeStatus::Unparsed(e) => {
                     s.rejected_unparsed += 1;
                     item.set("status", Json::Str("unparsed".into()))
                         .set("error", Json::Str(e));
                 }
-                Ok(expr) => {
-                    item.set("pretty", Json::Str(expr.pretty()))
-                        .set("size", Json::Num(expr.size() as f64));
-                    if let Err(v) = s.task.safety_check(&expr) {
-                        s.rejected_unsafe += 1;
-                        item.set("status", Json::Str("rejected_unsafe".into()))
-                            .set("reason", Json::Str(v.0));
-                    } else {
-                        let fit = s.task.score(&expr);
-                        item.set("score", Json::Num(fit));
-                        if fit > cur {
-                            s.incumbent = expr;
-                            cur = fit;
-                            s.accepted += 1;
-                            adopted_any = true;
-                            item.set("status", Json::Str("adopted".into()));
-                        } else {
-                            s.rejected_worse += 1;
-                            item.set("status", Json::Str("rejected_worse".into()));
-                        }
-                    }
+                ProposeStatus::Unsafe(reason) => {
+                    s.rejected_unsafe += 1;
+                    item.set("status", Json::Str("rejected_unsafe".into()))
+                        .set("reason", Json::Str(reason));
+                }
+                ProposeStatus::Adopted { pretty, score } => {
+                    s.accepted += 1;
+                    adopted_any = true;
+                    item.set("status", Json::Str("adopted".into()))
+                        .set("pretty", Json::Str(pretty))
+                        .set("score", Json::Num(score));
+                }
+                ProposeStatus::Worse { pretty, score } => {
+                    s.rejected_worse += 1;
+                    item.set("status", Json::Str("rejected_worse".into()))
+                        .set("pretty", Json::Str(pretty))
+                        .set("score", Json::Num(score));
                 }
             }
             results.push(item);
@@ -499,17 +684,18 @@ fn target_fn(name: &str) -> Result<fn(f64) -> f64, String> {
 /// Vue JSON de l'incumbent d'une session de raffinement + compteurs.
 fn incumbent_json(s: &RefineSession) -> Json {
     let mut o = Json::obj();
-    o.set("pretty", Json::Str(s.incumbent.pretty()))
-        .set("size", Json::Num(s.incumbent.size() as f64))
-        .set("score", Json::Num(s.task.score(&s.incumbent)))
-        .set("heldout", Json::Num(s.task.score_heldout(&s.incumbent)))
-        .set("target", Json::Str(s.target.clone()))
+    o.set("pretty", Json::Str(s.domain.incumbent_pretty()))
+        .set("size", Json::Num(s.domain.incumbent_size() as f64))
+        .set("score", Json::Num(s.domain.incumbent_score()))
+        .set("heldout", Json::Num(s.domain.incumbent_heldout()))
+        .set("domain", Json::Str(s.domain.domain().to_string()))
+        .set("config", Json::Str(s.descriptor.clone()))
         .set("accepted", Json::Num(s.accepted as f64))
         .set("proposals_seen", Json::Num(s.proposals_seen as f64))
         .set("rejected_unsafe", Json::Num(s.rejected_unsafe as f64))
         .set("rejected_worse", Json::Num(s.rejected_worse as f64))
         .set("rejected_unparsed", Json::Num(s.rejected_unparsed as f64))
-        .set("heldout_cases", Json::Num(s.task.heldout_len() as f64));
+        .set("heldout_cases", Json::Num(s.domain.heldout_cases() as f64));
     o
 }
 
@@ -656,7 +842,7 @@ de stabilité (‖ΔS‖<λ et non-régression de SI_global)."
         ("export", "Exporte la trajectoire. Params: id, format(csv|json)."),
         ("reset", "Réinitialise la session. Params: id."),
         ("list_sessions", "Liste les sessions actives."),
-        ("refine_new", "Crée une session de raffinement piloté par LLM (synthèse symbolique). Params: id, target(quadratic|linear|cubic), lo, hi, n, seed. Renvoie l'incumbent."),
+        ("refine_new", "Crée une session de raffinement piloté par LLM. Params: id, domain(synthesis|tuning). synthesis: target(quadratic|linear|cubic), lo, hi, n, seed. tuning: réglage d'hyperparamètres JSON. Renvoie l'incumbent."),
         ("incumbent", "Renvoie l'incumbent courant (expression, score train, score held-out, compteurs). Params: id."),
         ("evaluate", "Évalue un candidat SANS l'adopter (sonde). Params: id, candidate (texte d'expression). Renvoie score, held-out, safe, would_adopt."),
         ("propose", "Soumet des propositions ; le serveur parse, vérifie la sûreté, score et n'adopte qu'élitistement (strictement meilleur ET sûr). Params: id, proposals (tableau de chaînes) ou candidate (texte). Le LLM ne contrôle aucun garde-fou."),
@@ -851,5 +1037,43 @@ mod tests {
         let mut c = Json::obj();
         c.set("id", Json::Str("t".into())).set("target", Json::Str("exp".into()));
         assert!(api.handle("refine_new", &c).is_err());
+    }
+
+    #[test]
+    fn refine_unknown_domain_errors() {
+        let mut api = RsiApi::new();
+        let mut c = Json::obj();
+        c.set("id", Json::Str("d".into())).set("domain", Json::Str("magic".into()));
+        assert!(api.handle("refine_new", &c).is_err());
+    }
+
+    #[test]
+    fn refine_tuning_domain_via_mcp_commands() {
+        let mut api = RsiApi::new();
+        // session de domaine 'tuning'
+        let mut c = Json::obj();
+        c.set("id", Json::Str("g".into())).set("domain", Json::Str("tuning".into()));
+        let created = api.handle("refine_new", &c).unwrap();
+        assert_eq!(
+            created.get("incumbent").and_then(|i| i.get("domain")).and_then(|v| v.as_str()),
+            Some("tuning")
+        );
+
+        // propose une config JSON quasi-optimale + une hors bornes
+        let mut p = Json::obj();
+        p.set("id", Json::Str("g".into())).set(
+            "proposals",
+            Json::Arr(vec![
+                Json::Str("{\"top_k\":9999,\"chunk\":1024,\"threshold\":0.4}".into()), // hors bornes
+                Json::Str("{\"top_k\":50,\"chunk\":1036,\"threshold\":0.4}".into()),   // valide
+            ]),
+        );
+        let res = api.handle("propose", &p).unwrap();
+        assert_eq!(res.get("adopted").and_then(|v| v.as_bool()), Some(true));
+        let inc = res.get("incumbent").unwrap();
+        assert_eq!(inc.get("rejected_unsafe").and_then(|v| v.as_f64()), Some(1.0));
+        assert!(inc.get("score").and_then(|v| v.as_f64()).unwrap() > 0.9);
+        // l'incumbent est bien une config JSON
+        assert!(inc.get("pretty").and_then(|v| v.as_str()).unwrap().contains("top_k"));
     }
 }

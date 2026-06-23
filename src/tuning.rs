@@ -51,6 +51,14 @@ impl TuneConfig {
         o.to_string()
     }
 
+    /// Parse une configuration JSON (clés `top_k`, `chunk`, `threshold` requises),
+    /// avec message d'erreur — pour le rapport par-proposition côté MCP.
+    pub fn parse(s: &str) -> Result<TuneConfig, String> {
+        let j = Json::parse(s).map_err(|e| format!("JSON invalide: {e}"))?;
+        TuneConfig::from_json(&j)
+            .ok_or_else(|| "clés requises: top_k, chunk, threshold (nombres)".to_string())
+    }
+
     /// Parse une configuration depuis une valeur JSON (clés requises).
     fn from_json(j: &Json) -> Option<TuneConfig> {
         Some(TuneConfig {

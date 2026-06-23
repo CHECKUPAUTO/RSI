@@ -219,16 +219,18 @@ fn tools_list() -> Json {
         tool("rsi_list_sessions", "Liste les sessions actives.", Json::obj(), &[]),
         tool(
             "rsi_refine_new",
-            "Crée une session de raffinement piloté par LLM (synthèse symbolique d'expressions). \
-             Le LLM propose des expressions ; le serveur les évalue en sandbox et n'adopte que \
-             les strictement meilleures et sûres. Le LLM ne contrôle aucun garde-fou.",
+            "Crée une session de raffinement piloté par LLM. Le LLM propose des candidats (texte) ; \
+             le serveur les évalue en sandbox et n'adopte que les strictement meilleurs et sûrs — \
+             le LLM ne contrôle aucun garde-fou. Deux domaines : 'synthesis' (expressions \
+             arithmétiques) et 'tuning' (hyperparamètres JSON).",
             props(&[
                 id(),
-                ("target", prop("string", "Fonction cible: 'quadratic' (x²+1), 'linear' (2x-1), 'cubic' (x³-x).")),
-                ("lo", prop("number", "Borne basse de l'intervalle d'échantillonnage (défaut -3).")),
-                ("hi", prop("number", "Borne haute (défaut 3).")),
-                ("n", prop("integer", "Nombre de points (défaut 30 ; ~30% réservés en held-out).")),
-                ("seed", prop("integer", "Graine reproductible (défaut 2026).")),
+                ("domain", prop("string", "Domaine: 'synthesis' (défaut) ou 'tuning'.")),
+                ("target", prop("string", "[synthesis] cible: 'quadratic' (x²+1), 'linear' (2x-1), 'cubic' (x³-x).")),
+                ("lo", prop("number", "[synthesis] borne basse d'échantillonnage (défaut -3).")),
+                ("hi", prop("number", "[synthesis] borne haute (défaut 3).")),
+                ("n", prop("integer", "[synthesis] nombre de points (défaut 30 ; ~30% en held-out).")),
+                ("seed", prop("integer", "[synthesis] graine reproductible (défaut 2026).")),
             ]),
             &[],
         ),
@@ -245,7 +247,7 @@ fn tools_list() -> Json {
              held-out, sûreté et s'il serait adopté. N'altère pas l'incumbent.",
             props(&[
                 id(),
-                ("candidate", prop("string", "Expression sur x (ex: 'x*x + 1'), opérateurs + - *, parenthèses.")),
+                ("candidate", prop("string", "Candidat texte. synthesis: expression sur x (ex: 'x*x + 1'). tuning: config JSON (ex: '{\"top_k\":50,\"chunk\":1024,\"threshold\":0.4}').")),
             ]),
             &["candidate"],
         ),
@@ -256,8 +258,8 @@ fn tools_list() -> Json {
              sûr). Renvoie le détail par proposition et le nouvel incumbent.",
             props(&[
                 id(),
-                ("proposals", prop("array", "Tableau d'expressions candidates (chaînes).")),
-                ("candidate", prop("string", "Alternative: une ou plusieurs expressions, une par ligne.")),
+                ("proposals", prop("array", "Tableau de candidats (chaînes) : expressions (synthesis) ou configs JSON (tuning).")),
+                ("candidate", prop("string", "Alternative: un ou plusieurs candidats, un par ligne.")),
             ]),
             &[],
         ),

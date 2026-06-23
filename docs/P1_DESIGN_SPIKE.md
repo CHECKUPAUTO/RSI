@@ -370,6 +370,10 @@ Le LLM est une *source de propositions sous contrainte*, pas un pilote.
   de bornes (schéma). Démontre la **généralité** de `LlmRefineTask` (texte →
   **config**). Testé hors-ligne via mock (réglage convergent, rejet de config
   hors bornes, filtrage des JSON malformés). Utilisable via `ascend_llm`.
-- ⏭️ **Prochaines briques** : exposer la **multi-domaine via MCP** (les outils
-  `rsi_refine_new`/… ne pilotent que la synthèse pour l'instant) ; transport TLS
-  turnkey pour Claude (réseau) ; domaine « prompts ».
+- ✅ **Multi-domaine via MCP** : `RefineSession` généralisée derrière un trait
+  object-safe `RefineDomain` ; `rsi_refine_new` accepte `domain` (`synthesis` |
+  `tuning`). Les outils `rsi_incumbent`/`rsi_evaluate`/`rsi_propose` pilotent les
+  deux domaines de façon uniforme, le serveur restant autoritaire. Vérifié
+  end-to-end (tuning : config adoptée, config hors-bornes rejetée).
+- ⏭️ **Prochaines briques** : doc d'intégration `docs/LLM_INTEGRATION.md` ;
+  transport TLS turnkey pour Claude (réseau) ; domaine « prompts ».
