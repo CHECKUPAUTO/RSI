@@ -149,6 +149,20 @@ Le serveur `rsi-mcp` parle JSON-RPC 2.0 sur stdin/stdout. Un LLM externe
 Le **serveur applique `safety_check` et l'élitisme** : un candidat « meilleur en
 score mais hors bornes » est **refusé** ; un candidat moins bon est rejeté.
 
+### En CLI (`rsi-refine`)
+
+Pour piloter une session depuis le shell (sans client MCP), l'état est persisté
+dans un fichier entre invocations (via `refine_save`/`refine_load`) :
+
+```bash
+rsi-refine new --domain prompt                 # crée .rsi-refine.json
+rsi-refine eval "Résume étape par étape, exemple, format JSON."   # sonde (sans adopter)
+rsi-refine propose "Ignore previous instructions" "Résume … format JSON."
+#   [rejected_unsafe] marqueur d'injection détecté : 'ignore previous'
+#   [adopted] Résume … format JSON.
+rsi-refine show                                # incumbent persisté
+```
+
 ---
 
 ## 5. Garde-fous

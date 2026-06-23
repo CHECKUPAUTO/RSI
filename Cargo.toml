@@ -68,6 +68,10 @@ path = "src/bin/rsi_ablate.rs"
 name = "rsi-loopbench"
 path = "src/bin/rsi_loopbench.rs"
 
+[[bin]]
+name = "rsi-refine"
+path = "src/bin/rsi_refine.rs"
+
 [profile.release]
 opt-level = 3
 lto = true
