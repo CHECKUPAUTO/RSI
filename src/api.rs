@@ -448,6 +448,7 @@ impl RsiApi {
         match command {
             "describe" => Ok(describe()),
             "health" => Ok(self.cmd_health()),
+            "metrics" => Ok(self.cmd_metrics()),
             "create" => self.cmd_create(params),
             "step" => self.cmd_step(params),
             "run" => self.cmd_run(params),
@@ -670,6 +671,48 @@ impl RsiApi {
         out
     }
 
+    /// Métriques au **format d'exposition Prometheus** (texte), sans dépendance.
+    /// Scrapeable tel quel ; reflète les mêmes compteurs que `health`.
+    fn cmd_metrics(&self) -> Json {
+        let mut total_steps = 0usize;
+        let mut audited = 0usize;
+        let mut intact = 0usize;
+        for s in self.sessions.values() {
+            total_steps += s.agent.t;
+            if s.agent.audit_len() > 0 {
+                audited += 1;
+                if s.agent.audit_verify() {
+                    intact += 1;
+                }
+            }
+        }
+        let mut proposals = 0usize;
+        let mut accepted = 0usize;
+        for r in self.refines.values() {
+            proposals += r.proposals_seen;
+            accepted += r.accepted;
+        }
+        let audit_intact = if audited == intact { 1 } else { 0 };
+        let metric = |name: &str, help: &str, ty: &str, val: usize| -> String {
+            format!("# HELP {name} {help}\n# TYPE {name} {ty}\n{name} {val}\n")
+        };
+        let text = [
+            metric("rsi_sessions", "Active agent sessions.", "gauge", self.sessions.len()),
+            metric("rsi_refine_sessions", "Active refinement sessions.", "gauge", self.refines.len()),
+            metric("rsi_total_steps", "Cumulative RSI steps across sessions.", "counter", total_steps),
+            metric("rsi_audited_sessions", "Sessions with a hash-chained audit log.", "gauge", audited),
+            metric("rsi_audit_intact", "1 if all audited sessions verify, else 0.", "gauge", audit_intact),
+            metric("rsi_refine_proposals_seen", "Proposals examined by the server.", "counter", proposals),
+            metric("rsi_refine_accepted", "Strictly-better proposals adopted.", "counter", accepted),
+        ]
+        .concat();
+        let mut out = Json::obj();
+        out.set("ok", Json::Bool(true))
+            .set("format", Json::Str("prometheus".to_string()))
+            .set("metrics", Json::Str(text));
+        out
+    }
+
     fn cmd_list(&self) -> Json {
         let arr: Vec<Json> = self
             .sessions
@@ -873,11 +916,13 @@ impl RsiApi {
                         .set("error", Json::Str(e));
                 }
                 ProposeStatus::Unsafe(reason) => {
+                    crate::obs::warn("refine_reject_unsafe", &reason);
                     s.rejected_unsafe += 1;
                     item.set("status", Json::Str("rejected_unsafe".into()))
                         .set("reason", Json::Str(reason));
                 }
                 ProposeStatus::Adopted { pretty, score } => {
+                    crate::obs::info("refine_adopt", &pretty);
                     s.accepted += 1;
                     adopted_any = true;
                     item.set("status", Json::Str("adopted".into()))
@@ -1117,6 +1162,7 @@ de stabilité (‖ΔS‖<λ et non-régression de SI_global)."
     let commands = [
         ("describe", "Décrit le système et les commandes."),
         ("health", "Santé du serveur : sessions, pas cumulés, intégrité de l'audit, activité de raffinement."),
+        ("metrics", "Métriques au format d'exposition Prometheus (texte) : sessions, pas, intégrité audit, raffinement. Sans dépendance."),
         ("create", "Crée une session. Params: id, seed, optimizer(random|cma), dim, n_tasks, n_hardware, n_software, lambda, epsilon, eta0, forgetting, phi_slope, phi_bias, (+ candidates/explore_scale ou population/generations/sigma0)."),
         ("step", "Un pas de boucle RSI. Params: id."),
         ("run", "Avance de N pas. Params: id, steps."),
@@ -1237,6 +1283,19 @@ mod tests {
         assert!(h.get("total_steps").and_then(|v| v.as_f64()).unwrap() >= 10.0);
         assert_eq!(h.get("audited_sessions").and_then(|v| v.as_f64()), Some(1.0));
         assert_eq!(h.get("audit_intact").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    #[test]
+    fn metrics_renders_prometheus_exposition() {
+        let mut api = RsiApi::new();
+        let res = api.handle("metrics", &Json::obj()).unwrap();
+        assert_eq!(res.get("format").and_then(|v| v.as_str()), Some("prometheus"));
+        let text = res.get("metrics").and_then(|v| v.as_str()).unwrap();
+        // format d'exposition : HELP/TYPE + valeurs
+        assert!(text.contains("# TYPE rsi_sessions gauge"));
+        assert!(text.contains("# HELP rsi_audit_intact"));
+        assert!(text.contains("\nrsi_total_steps "));
+        assert!(text.contains("\nrsi_refine_accepted "));
     }
 
     #[test]

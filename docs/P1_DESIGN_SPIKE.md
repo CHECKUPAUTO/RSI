@@ -396,5 +396,9 @@ Le LLM est une *source de propositions sous contrainte*, pas un pilote.
 - ✅ **Backend Claude TLS turnkey** (`UreqTransport`, feature `llm-claude-ureq`).
 - ✅ **Vrai moteur scirust** (git-dep amont validé : 131 tests `--features scirust`).
 - ✅ **Docs** : `docs/LLM_INTEGRATION.md`, `docs/SAFETY.md`, `docs/WEB_ENV.md`.
-- ⏭️ **Reste** : observabilité (`tracing`/Prometheus) ; SIMD `wide` (derrière
-  feature, relâche la repro bit-exacte) ; vérification formelle (P0.4).
+- ✅ **Observabilité** : commande `metrics` au **format Prometheus** (texte,
+  scrapeable, **sans dépendance**) + événements `tracing` derrière la feature
+  `observability` (no-op sans elle, via `src/obs.rs` ; instrumente adoption/rejet
+  de propositions). Le cœur reste std-only.
+- ⏭️ **Reste** : SIMD `wide` (derrière feature, relâche la repro bit-exacte
+  cross-build) ; vérification formelle (P0.4).

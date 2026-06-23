@@ -64,6 +64,7 @@ pub mod llm;
 pub mod measured_substrate;
 pub mod memory;
 pub mod meta;
+pub mod obs;
 pub mod plot;
 pub mod prompt;
 pub mod tasks;

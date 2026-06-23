@@ -225,6 +225,13 @@ fn tools_list() -> Json {
             &[],
         ),
         tool(
+            "rsi_metrics",
+            "Métriques au format d'exposition Prometheus (texte, scrapeable) : sessions, \
+             pas cumulés, intégrité de l'audit, propositions vues/adoptées.",
+            Json::obj(),
+            &[],
+        ),
+        tool(
             "rsi_refine_new",
             "Crée une session de raffinement piloté par LLM. Le LLM propose des candidats (texte) ; \
              le serveur les évalue en sandbox et n'adopte que les strictement meilleurs et sûrs — \
