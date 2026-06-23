@@ -35,6 +35,29 @@ agents. Au prochain démarrage, ils disposent des outils `rsi_*` (`rsi_create`,
 > Pas d'agent sous la main ? Teste le moteur directement :
 > `cargo run --release --bin rsi-demo`
 
+### Conteneur / build reproductible
+
+Le **cœur** (features par défaut) est *std-only* et **sans dépendance externe** :
+il se package en binaires statiques sans accès réseau.
+
+```bash
+# Image Docker minimale (build musl statique → image `scratch`)
+docker build -t rsi:latest .
+docker run --rm -i rsi:latest          # serveur MCP (stdio)
+docker run --rm --entrypoint /usr/local/bin/rsi-demo rsi:latest
+
+# Build reproductible via Nix (flake)
+nix build               # → ./result/bin/{rsi-mcp,rsi-demo,…}
+nix run                 # lance rsi-mcp
+nix develop             # shell outillé (cargo, clippy, rustfmt)
+```
+
+> **Distribution.** RSI dépend de 4 crates git privées (forge/octasoma/ccos/
+> scirust) **optionnelles** : il n'est donc **pas publié sur crates.io** (le
+> registre exige une version pour toute dépendance). La distribution se fait par
+> **source + Docker/Nix** ci-dessus. `rsi-full` (features git) sort de ce
+> périmètre hors-ligne.
+
 ## Correspondance équations ↔ code
 
 | Section | Équation | Module |

@@ -9,6 +9,12 @@ description = "Recursive Self-Improvement — implémentation Rust du système g
 # licence commerciale, hors liste SPDX standard).
 license = "PolyForm-Noncommercial-1.0.0 OR LicenseRef-Commercial"
 authors = ["Tarek Zekriti / CHECKUPAUTO"]
+repository = "https://github.com/CHECKUPAUTO/RSI"
+homepage = "https://github.com/CHECKUPAUTO/RSI"
+documentation = "https://github.com/CHECKUPAUTO/RSI/tree/main/docs"
+readme = "README.md"
+keywords = ["rsi", "self-improvement", "optimization", "agent", "llm"]
+categories = ["science", "simulation"]
 
 [[bin]]
 name = "rsi-full"

@@ -406,5 +406,23 @@ Le LLM est une *source de propositions sous contrainte*, pas un pilote.
   bit-exacte *cross-build* (documenté dans `docs/SAFETY.md`). Gain modéré : le
   coût dominant de `si_global` est l'évaluation Φ/g par tâche (trait objects),
   non la réduction finale. 132 tests verts sous `--features simd`.
+- ✅ **P4 — packaging (artefacts, sans publication)** : `Dockerfile` multi-étage
+  **musl statique** (étage `rust:alpine` → image `scratch` ; ne build que le
+  CŒUR std-only, donc **0 dépendance ⇒ build hors-ligne** ; `rsi-full` sauté
+  automatiquement faute de required-features) + `.dockerignore` (contexte
+  minimal). Build musl **validé localement** : binaires `static-pie / statically
+  linked` (`ldd` ⇒ « statically linked »), `rsi-demo` s'exécute. `flake.nix`
+  reproductible (`nix build` / `nix run` → `rsi-mcp`, `nix develop` outillé) :
+  build offline du cœur ; `doCheck=false` car un test (`/bin/echo` absolu) n'est
+  pas hermétique en bac à sable Nix scellé (les tests se jouent en `nix develop`/CI).
+  Métadonnées de manifeste complétées (repository/homepage/documentation/keywords/
+  categories) ⇒ l'avertissement `cargo package` disparaît.
+- ⚠️ **Publiabilité crates.io** : `cargo publish --dry-run` **échoue par design** —
+  les 4 deps git privées (`forge-core`, `octasoma`, `ccos`, `scirust-rsi`) n'ont
+  pas de version crates.io, et crates.io exige une version pour **toute** dép
+  (même optionnelle, la source git étant retirée à la publication). Le cœur n'est
+  donc **pas publiable tel quel** ; il faudrait d'abord publier ces 4 crates amont
+  (ou les sortir du manifeste publié). La distribution se fait donc par **source +
+  Docker/Nix** (validés), pas par registre. Aucune publication effectuée.
 - ⏭️ **Reste** : vérification formelle creusot/loom (P0.4) — outillage + temps
   expert ; non bloquant.
