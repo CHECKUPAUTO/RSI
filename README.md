@@ -323,7 +323,15 @@ crate [`soul-rsi`](https://github.com/CHECKUPAUTO/soul-rsi) :
 > réutilisable ▸ recommence.
 
 ```bash
-cargo run --release --example dgm_selfimprove   # boucle jouet, déterministe, hors-ligne
+cargo run --release --example dgm_selfimprove    # boucle jouet, déterministe, hors-ligne
+
+# Sur un dépôt RÉEL (build+test cargo), backend Ollama local, SÛR par défaut :
+cargo run --release --features llm-ollama --bin rsi-dgm -- \
+    /chemin/du/depot --goal "accélérer X sans casser les tests" \
+    --allow src/foo.rs,src/bar.rs --steps 20
+# DRY-RUN : l'arbre vivant n'est jamais écrit. Ajouter --promote pour appliquer
+# le meilleur variant tout-au-vert (avec sauvegarde réversible). Claude :
+# --features llm-claude-ureq puis --backend claude (ANTHROPIC_API_KEY).
 ```
 
 - **STOP** (Zelikman 2023) : le proposeur est interchangeable
@@ -364,6 +372,7 @@ src/
 ├── main.rs         binaire de démonstration (rsi-demo)
 └── bin/
     ├── rsi_mcp.rs      serveur MCP (JSON-RPC 2.0 / stdio)
+    ├── rsi_dgm.rs      CLI DGM/STOP sur dépôt réel (dry-run sûr, --promote opt-in)
     └── rsi_connect.rs  auto-enregistrement MCP (openclaw, hermes-agent, …)
 scripts/
 └── auto-connect.sh  build + connexion MCP automatique

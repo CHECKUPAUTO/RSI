@@ -1,0 +1,287 @@
+//! `rsi-dgm` — boucle d'auto-amélioration **empirique** (Darwin–Gödel / STOP)
+//! sur un dépôt **réel**, depuis le shell. Pilote [`rsi::dgm`].
+//!
+//! **Sûr par défaut : DRY-RUN.** La boucle propose des patchs, les évalue dans
+//! des **copies isolées** (`cargo build`+`test`) et archive les meilleurs, mais
+//! **n'écrit JAMAIS l'arbre vivant** — sauf si l'on passe `--promote`, qui
+//! applique le **seul meilleur** variant *tout-au-vert* au dépôt (avec
+//! sauvegarde réversible).
+//!
+//! Backend LLM : **Ollama local par défaut** (`--backend ollama`) ; Claude
+//! disponible avec la feature `llm-claude-ureq` (`--backend claude`,
+//! `ANTHROPIC_API_KEY` dans l'environnement).
+//!
+//! ```text
+//! rsi-dgm <workspace> --goal "..." --allow src/a.rs,src/b.rs [options]
+//!
+//! Options :
+//!   --goal TEXT           objectif remis au proposeur            (requis)
+//!   --allow LIST          fichiers éditables (séparés par ',')    (requis)
+//!   --steps N             nombre d'étapes                         (défaut 10)
+//!   --seed N              graine déterministe                     (défaut 42)
+//!   --package-subdir DIR  sous-répertoire de manifeste à builder  (défaut: racine)
+//!   --test-args "ARGS"    args additionnels pour `cargo test`     (défaut: aucun)
+//!   --backend ollama|claude                                       (défaut ollama)
+//!   --model NAME          modèle LLM                              (défaut selon backend)
+//!   --ollama-host HOST                                            (défaut 127.0.0.1)
+//!   --ollama-port PORT                                            (défaut 11434)
+//!   --timeout SECS        délai max par invocation cargo          (défaut 300)
+//!   --promote             applique le meilleur variant à l'arbre vivant
+//!   --backups DIR         sauvegardes pour --promote        (défaut <ws>/.rsi_backups)
+//! ```
+
+use std::process::exit;
+use std::time::Duration;
+
+use rsi::dgm::{
+    Archive, CargoEvaluator, CodeModel, DgmConfig, DgmEngine, Evaluator, LlmCodeModel, LlmProposer,
+    StepOutcome, WorkspaceSnapshot,
+};
+
+const VALUE_FLAGS: &[&str] = &[
+    "--goal", "--allow", "--steps", "--seed", "--package-subdir", "--test-args", "--backend",
+    "--model", "--ollama-host", "--ollama-port", "--timeout", "--backups",
+];
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 2 || matches!(args[1].as_str(), "-h" | "--help" | "help") {
+        usage();
+        exit(if args.len() < 2 { 2 } else { 0 });
+    }
+
+    // Premier positionnel (hors valeurs de drapeaux) = racine du workspace.
+    let ws = match first_positional(&args) {
+        Some(p) => std::path::PathBuf::from(p),
+        None => {
+            eprintln!("erreur : racine du workspace manquante.\n");
+            usage();
+            exit(2);
+        }
+    };
+    if !ws.is_dir() {
+        eprintln!("erreur : '{}' n'est pas un répertoire.", ws.display());
+        exit(2);
+    }
+
+    let goal = required(&args, "--goal");
+    let allow_raw = required(&args, "--allow");
+    let allowed: Vec<String> = allow_raw
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if allowed.is_empty() {
+        eprintln!("erreur : --allow doit lister au moins un fichier éditable.");
+        exit(2);
+    }
+
+    let steps: usize = flag_value(&args, "--steps").and_then(|v| v.parse().ok()).unwrap_or(10);
+    let seed: u64 = flag_value(&args, "--seed").and_then(|v| v.parse().ok()).unwrap_or(42);
+    let timeout_secs: u64 = flag_value(&args, "--timeout").and_then(|v| v.parse().ok()).unwrap_or(300);
+    let backend = flag_value(&args, "--backend").unwrap_or_else(|| "ollama".to_string());
+    let promote = args.iter().any(|a| a == "--promote");
+
+    // --- Backend LLM (Ollama par défaut ; Claude si feature présente). ------ //
+    let model: Box<dyn CodeModel> = match backend.as_str() {
+        "ollama" => {
+            let name = flag_value(&args, "--model").unwrap_or_else(|| "qwen2.5-coder".to_string());
+            let host = flag_value(&args, "--ollama-host").unwrap_or_else(|| "127.0.0.1".to_string());
+            let port: u16 = flag_value(&args, "--ollama-port").and_then(|v| v.parse().ok()).unwrap_or(11434);
+            let client = rsi::llm::OllamaClient::new(name)
+                .with_endpoint(host, port)
+                .with_timeout(Duration::from_secs(timeout_secs));
+            Box::new(LlmCodeModel::new(client))
+        }
+        "claude" => make_claude(&args),
+        other => {
+            eprintln!("erreur : backend inconnu '{other}' (ollama|claude).");
+            exit(2);
+        }
+    };
+
+    let proposer = LlmProposer::new(model, allowed.clone());
+
+    // --- Évaluateur empirique réel (cargo build + test, borné). ------------- //
+    let evaluator = CargoEvaluator {
+        package_subdir: flag_value(&args, "--package-subdir").map(Into::into).unwrap_or_default(),
+        test_args: flag_value(&args, "--test-args")
+            .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
+            .unwrap_or_default(),
+        score_from_passrate: true,
+        timeout: Duration::from_secs(timeout_secs),
+        ..Default::default()
+    };
+
+    // --- Référence : évaluer l'arbre vivant une fois (snapshot, intact). ---- //
+    eprintln!("• évaluation de la référence (arbre vivant, build+test)…");
+    let baseline = match WorkspaceSnapshot::create(&ws).and_then(|s| evaluator.evaluate(s.root())) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("erreur : impossible d'évaluer la référence : {e}");
+            exit(1);
+        }
+    };
+    println!(
+        "  référence : compiles={} passed={} failed={} score={:.4}",
+        baseline.compiles, baseline.tests_passed, baseline.tests_failed, baseline.score
+    );
+
+    // --- Boucle. ------------------------------------------------------------ //
+    let mut engine = DgmEngine::new(
+        Archive::with_root(baseline.clone()),
+        proposer,
+        evaluator,
+        DgmConfig::new(&ws, &goal),
+        seed,
+    );
+
+    println!("• boucle DGM : {steps} étapes, backend={backend}, fichiers={allowed:?}\n");
+    let outcomes = match engine.run(steps) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("erreur : la boucle a échoué : {e}");
+            exit(1);
+        }
+    };
+    for (i, o) in outcomes.iter().enumerate() {
+        match o {
+            StepOutcome::NoProposal => println!("  step {i:2} · pas de proposition"),
+            StepOutcome::Evaluated { accepted, fitness, variant_id, .. } => println!(
+                "  step {i:2} · {} · compiles={} passed={} failed={} score={:.4} · {}",
+                if *accepted { "ACCEPTÉ " } else { "rejeté  " },
+                fitness.compiles,
+                fitness.tests_passed,
+                fitness.tests_failed,
+                fitness.score,
+                &variant_id[..8.min(variant_id.len())],
+            ),
+        }
+    }
+
+    // --- Verdict / promotion. ---------------------------------------------- //
+    let best = engine.best().cloned();
+    let root_id = engine.archive().variants().first().map(|v| v.id.clone());
+    println!("\n  archive : {} variantes gardées", engine.archive().len());
+
+    let promotable = best.as_ref().filter(|b| {
+        Some(&b.id) != root_id.as_ref()
+            && b.fitness.as_ref().map(|f| f.all_green() && f.is_better_than(&baseline)).unwrap_or(false)
+    });
+
+    match promotable {
+        None => {
+            println!("  aucune amélioration promouvable trouvée (rien à appliquer).");
+        }
+        Some(b) => {
+            let f = b.fitness.as_ref().unwrap();
+            println!(
+                "  meilleur variant promouvable : {} → {} (passed={} failed={} score={:.4})",
+                b.patch.target,
+                short(&b.id),
+                f.tests_passed,
+                f.tests_failed,
+                f.score
+            );
+            if promote {
+                let backups = flag_value(&args, "--backups")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| ws.join(".rsi_backups"));
+                match rsi::dgm::promote_to_live(&ws, &b.patch, &backups) {
+                    Ok(id) => println!(
+                        "  ✓ PROMU vers l'arbre vivant (sauvegarde {id} dans {}).",
+                        backups.display()
+                    ),
+                    Err(e) => {
+                        eprintln!("  ✗ échec de la promotion : {e}");
+                        exit(1);
+                    }
+                }
+            } else {
+                println!("  (DRY-RUN : arbre vivant intact. Relancer avec --promote pour appliquer.)");
+                println!("  note : seul ce patch unique serait appliqué (variant = delta depuis la référence).");
+            }
+        }
+    }
+}
+
+#[cfg(feature = "llm-claude-ureq")]
+fn make_claude(args: &[String]) -> Box<dyn CodeModel> {
+    let key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
+    if key.is_empty() {
+        eprintln!("erreur : backend claude requiert ANTHROPIC_API_KEY dans l'environnement.");
+        exit(2);
+    }
+    let name = flag_value(args, "--model").unwrap_or_else(|| "claude-sonnet-4-6".to_string());
+    Box::new(LlmCodeModel::new(rsi::llm::ClaudeClient::with_ureq(key, name)))
+}
+
+#[cfg(not(feature = "llm-claude-ureq"))]
+fn make_claude(_args: &[String]) -> Box<dyn CodeModel> {
+    eprintln!("erreur : backend claude indisponible — recompiler avec --features llm-claude-ureq.");
+    exit(2);
+}
+
+// ----------------------------- parsing args ------------------------------- //
+
+fn flag_value(args: &[String], flag: &str) -> Option<String> {
+    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned()
+}
+
+fn required(args: &[String], flag: &str) -> String {
+    match flag_value(args, flag) {
+        Some(v) => v,
+        None => {
+            eprintln!("erreur : {flag} est requis.\n");
+            usage();
+            exit(2);
+        }
+    }
+}
+
+/// Premier argument positionnel (ni un drapeau, ni la valeur d'un drapeau).
+fn first_positional(args: &[String]) -> Option<String> {
+    let mut i = 2; // 0 = bin, 1 = (déjà géré : peut être le workspace ou un flag)
+    // On considère aussi args[1] s'il n'est pas un flag.
+    if !args[1].starts_with("--") {
+        return Some(args[1].clone());
+    }
+    while i < args.len() {
+        let a = &args[i];
+        if a.starts_with("--") {
+            // saute la valeur si ce drapeau en consomme une
+            if VALUE_FLAGS.contains(&a.as_str()) {
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else {
+            return Some(a.clone());
+        }
+    }
+    None
+}
+
+fn short(id: &str) -> &str {
+    &id[..8.min(id.len())]
+}
+
+fn usage() {
+    eprintln!(
+        "rsi-dgm — auto-amélioration empirique (Darwin–Gödel/STOP) sur un dépôt réel\n\n\
+         USAGE:\n  \
+           rsi-dgm <workspace> --goal \"...\" --allow src/a.rs,src/b.rs [options]\n\n\
+         SÛR PAR DÉFAUT : DRY-RUN (l'arbre vivant n'est jamais écrit sans --promote).\n\n\
+         Options principales :\n  \
+           --goal TEXT           objectif (requis)\n  \
+           --allow LIST          fichiers éditables, séparés par ',' (requis)\n  \
+           --steps N             étapes (défaut 10)   --seed N (défaut 42)\n  \
+           --backend ollama|claude (défaut ollama)    --model NAME\n  \
+           --package-subdir DIR  sous-crate à builder  --test-args \"ARGS\"\n  \
+           --timeout SECS        borne par cargo (défaut 300)\n  \
+           --promote             applique le meilleur variant tout-au-vert\n  \
+           --backups DIR         sauvegardes (défaut <ws>/.rsi_backups)\n\n\
+         Backend Ollama local par défaut (http://127.0.0.1:11434). Claude :\n\
+         recompiler avec --features llm-claude-ureq et exporter ANTHROPIC_API_KEY."
+    );
+}

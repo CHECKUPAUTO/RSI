@@ -442,5 +442,13 @@ Le LLM est une *source de propositions sous contrainte*, pas un pilote.
   doctest + exemple `dgm_selfimprove`. Sûreté documentée (`SAFETY.md` §5bis + §8 :
   exécution de code réel, isolation = snapshot + sous-process borné, **pas** un
   bac à sable syscall). 155 tests au total en défaut, clippy 0 warning.
+- ✅ **Binaire `rsi-dgm`** : CLI pilotant la boucle DGM/STOP sur un **dépôt
+  réel** (`CargoEvaluator` build+test borné). **Sûr par défaut : DRY-RUN**
+  (l'arbre vivant n'est jamais écrit) ; `--promote` applique le **seul** meilleur
+  variant *tout-au-vert* avec sauvegarde réversible. Backend **Ollama local par
+  défaut** (`required-features = ["llm-ollama"]`), Claude optionnel
+  (`--features llm-claude-ureq`, `--backend claude`). Validé bout-en-bout
+  (`--steps 0` : référence évaluée par vrai `cargo build`+`test`, arbre intact ;
+  validation d'args). clippy 0 warning (llm-ollama, +llm-claude-ureq).
 - ⏭️ **Reste** : vérification formelle creusot/loom (P0.4) — outillage + temps
   expert ; non bloquant.

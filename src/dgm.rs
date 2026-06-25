@@ -559,6 +559,13 @@ pub trait CodeModel {
     fn complete(&self, prompt: &str) -> Result<String>;
 }
 
+/// Permet de choisir un backend à l'exécution (`Box<dyn CodeModel>`).
+impl CodeModel for Box<dyn CodeModel> {
+    fn complete(&self, prompt: &str) -> Result<String> {
+        (**self).complete(prompt)
+    }
+}
+
 /// Tout ce dont un proposeur a besoin pour raisonner sur le prochain changement.
 pub struct ImprovementContext<'a> {
     /// Racine du workspace (vivant, lecture seule) que le proposeur peut inspecter.

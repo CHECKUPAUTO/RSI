@@ -98,6 +98,13 @@ path = "src/bin/rsi_loopbench.rs"
 name = "rsi-refine"
 path = "src/bin/rsi_refine.rs"
 
+# Boucle d'auto-amélioration empirique (DGM/STOP) sur un dépôt réel. Backend LLM
+# local Ollama requis ; Claude optionnel via --features llm-claude-ureq.
+[[bin]]
+name = "rsi-dgm"
+path = "src/bin/rsi_dgm.rs"
+required-features = ["llm-ollama"]
+
 [profile.release]
 opt-level = 3
 lto = true
