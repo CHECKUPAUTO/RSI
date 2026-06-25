@@ -37,15 +37,18 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       # --- Défaut (cœur sans dépendance) ----------------------------------- #
+      # `--locked` : utilise le Cargo.lock versionné tel quel ⇒ pas de
+      # ré-résolution du manifeste, donc aucune tentative de cloner les deps git
+      # privées (forge/octasoma/ccos/scirust) non activées ici.
       - name: Clippy (défaut) — 0 warning
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Tests (défaut, + doctests)
-        run: cargo test
+        run: cargo test --locked
 
       # --- Toutes les features publiques ----------------------------------- #
       - name: Clippy (features publiques) — 0 warning
-        run: cargo clippy --all-targets --features "$PUBLIC_FEATURES" -- -D warnings
+        run: cargo clippy --all-targets --locked --features "$PUBLIC_FEATURES" -- -D warnings
 
       - name: Tests (features publiques)
-        run: cargo test --features "$PUBLIC_FEATURES"
+        run: cargo test --locked --features "$PUBLIC_FEATURES"

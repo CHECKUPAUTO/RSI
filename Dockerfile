@@ -25,13 +25,16 @@ RUN apk add --no-cache musl-dev
 WORKDIR /build
 
 # On ne copie que ce dont le build a besoin (cf. .dockerignore pour le reste).
-COPY Cargo.toml ./
+# Cargo.lock est requis : sans lui, `cargo` résout tout le manifeste et tente de
+# cloner les deps git privées (forge/octasoma/ccos/scirust) ⇒ échec.
+COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
-# Features par défaut = std-only, AUCUNE dépendance crate ⇒ build hors-ligne.
-# `--bins` saute automatiquement rsi-full (required-features non activées).
+# Features par défaut = std-only, AUCUNE dépendance crate activée ⇒ build
+# hors-ligne. `--locked` fige la résolution sur le lock (pas de clone des deps
+# privées). `--bins` saute rsi-full (required-features non activées).
 ENV CARGO_NET_OFFLINE=true
-RUN cargo build --release --bins --target x86_64-unknown-linux-musl
+RUN cargo build --release --bins --locked --target x86_64-unknown-linux-musl
 
 # ──────────────────────────────────────────────────────────────────────────
 # Étage 2 — image d'exécution minimale.

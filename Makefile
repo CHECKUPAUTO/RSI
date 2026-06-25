@@ -25,10 +25,10 @@ connect:
 ## ci : reproduit en local exactement les checks de la CI (clippy 0 warning +
 ## tests, en défaut puis avec les features publiques). À lancer avant de pousser.
 ci:
-	cargo clippy --all-targets -- -D warnings
-	cargo test
-	cargo clippy --all-targets --features "wasm observability simd llm-ollama llm-claude-ureq" -- -D warnings
-	cargo test --features "wasm observability simd llm-ollama llm-claude-ureq"
+	cargo clippy --all-targets --locked -- -D warnings
+	cargo test --locked
+	cargo clippy --all-targets --locked --features "wasm observability simd llm-ollama llm-claude-ureq" -- -D warnings
+	cargo test --locked --features "wasm observability simd llm-ollama llm-claude-ureq"
 
 ## clean : nettoie les artefacts de build
 clean:

@@ -49,7 +49,9 @@
           buildPhase = ''
             runHook preBuild
             export CARGO_HOME="$TMPDIR/cargo"
-            cargo build --release --bins --offline
+            # --locked : Cargo.lock est versionné ⇒ pas de ré-résolution (donc
+            # aucun clone des deps git privées non activées par le défaut).
+            cargo build --release --bins --offline --locked
             runHook postBuild
           '';
 
