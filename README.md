@@ -1,5 +1,7 @@
 # RSI — Recursive Self-Improvement (Rust)
 
+[![CI](https://github.com/CHECKUPAUTO/RSI/actions/workflows/ci.yml/badge.svg)](https://github.com/CHECKUPAUTO/RSI/actions/workflows/ci.yml)
+
 Implémentation **100 % Rust** (std-only, aucune dépendance externe) du
 **système mathématique d'auto-amélioration récursive** — formulation
 géométrique unifiée, v9.

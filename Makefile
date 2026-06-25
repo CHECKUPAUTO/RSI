@@ -1,6 +1,6 @@
 # RSI — raccourcis. La cible la plus simple : `make install`.
 
-.PHONY: install build test demo connect clean
+.PHONY: install build test demo connect clean ci
 
 ## install : compile et connecte RSI à ton agent IA (openclaw, hermes-agent…)
 install:
@@ -21,6 +21,14 @@ demo:
 ## connect : (re)connecte le serveur MCP aux agents (sans recompiler)
 connect:
 	cargo run --release --bin rsi-connect
+
+## ci : reproduit en local exactement les checks de la CI (clippy 0 warning +
+## tests, en défaut puis avec les features publiques). À lancer avant de pousser.
+ci:
+	cargo clippy --all-targets -- -D warnings
+	cargo test
+	cargo clippy --all-targets --features "wasm observability simd llm-ollama llm-claude-ureq" -- -D warnings
+	cargo test --features "wasm observability simd llm-ollama llm-claude-ureq"
 
 ## clean : nettoie les artefacts de build
 clean:

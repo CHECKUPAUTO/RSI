@@ -141,7 +141,7 @@ garanti (actuellement le README §3 promet `SI(t+1) ≥ SI(t) − ε` comme
 invariant global), soit étendre le line search au pas combiné `meta + appr`.
 *(Recommandation inchangée.)*
 
-### 🟡 Bug C — `meta.rs:127` encode/decode non-roundtrip aux bornes [NON CORRIGÉ]
+### 🟢 Bug C — `meta.rs:127` encode/decode non-roundtrip aux bornes [CORRIGÉ]
 
 ```rust
 let x = self.gain.clamp(GAIN_LO + 1e-6, GAIN_HI - 1e-6);
@@ -152,9 +152,11 @@ Encode clamp à `GAIN_LO + 1e-6`, mais `decode` fait
 `GAIN_LO + (GAIN_HI-GAIN_LO)*sigmoid(θ)` qui peut rendre des valeurs dans
 `[GAIN_LO, GAIN_LO+1e-6)`. Le test `encode_decode_roundtrip` évite les bornes
 donc ne le détecte pas. Effet mineur (stratégie légèrement décalée) mais
-viole l'invariant de roundtrip. **Statut : inchangé.**
+viole l'invariant de roundtrip. **Statut : CORRIGÉ** — `decode` applique les
+**bornes identiques** à `encode` (`meta.rs`, « roundtrip idempotent jusqu'aux
+extrêmes ») et le test `encode_decode_roundtrip` couvre désormais des θ extrêmes.
 
-### 🟡 Bug D — `json.rs:293` échappement `\u` non conforme RFC 8259 [NON CORRIGÉ]
+### 🟢 Bug D — `json.rs:293` échappement `\u` non conforme RFC 8259 [CORRIGÉ]
 
 Pas de gestion des surrogate pairs UTF-16 : un caractère hors BMP (ex. emoji)
 est encodé en un seul `\uXXXX` par `write_escaped` côté sérialisation, mais
@@ -162,9 +164,11 @@ le parseur interprète `\uXXXX` comme un seul codepoint. Pour `char::from_u32`
 avec `code > 0xFFFF`, Rust accepte (Unicode scalaire) — donc côté parsing ça
 marche, mais la sérialisation n'est pas strictement RFC 8259 (devrait émettre
 surrogate pairs). Aucun impact pratique ici (pas d'emoji dans les payloads).
-**Statut : inchangé.**
+**Statut : CORRIGÉ** — le parseur gère les **paires de surrogates UTF-16**
+(RFC 8259) et rejette proprement un surrogate isolé/invalide (erreur, pas de
+panic) ; test `parses_utf16_surrogate_pairs` (caractère hors-BMP 😀).
 
-### 🟡 Bug E — `api.rs:59` `as_u64` silent sur négatifs/NaN [NON CORRIGÉ]
+### 🟢 Bug E — `api.rs:59` `as_u64` silent sur négatifs/NaN [CORRIGÉ]
 
 ```rust
 pub fn as_u64(&self) -> Option<u64> { self.as_f64().map(|n| n as u64) }
@@ -173,7 +177,9 @@ pub fn as_u64(&self) -> Option<u64> { self.as_f64().map(|n| n as u64) }
 `-1.0 as u64` → `0` (saturation silencieuse), `NaN as u64` → `0`. Une config
 `{"steps": -5}` devient silencieusement 0 pas. `bounded()` clamping compense
 pour `steps` (borne `[0, MAX_STEPS]`) mais pas pour `seed`. Mineur mais à
-corriger pour robustesse API. **Statut : inchangé.**
+corriger pour robustesse API. **Statut : CORRIGÉ** — `as_u64`/`as_usize`
+rejettent désormais NaN, ±∞ et négatifs (`filter(|n| n.is_finite() && *n >= 0.0)`
+⇒ `None` au lieu d'une saturation silencieuse à 0).
 
 ### 🟡 Bug F — `swarm.rs:53` `h.join().unwrap()` [NOUVEAU]
 
@@ -380,17 +386,22 @@ bug G (sous-processus non borné).
 | Bugs identifiés | 5 (A-E) | 8 (A-H) | +3 nouveaux, 0 corrigé |
 | Features vendoring | non | scirust-rsi (path dep) | nouveau |
 
-### Statut des bugs hérités
-- **Bug A** (dynamics.rs:85 saturation) — ❌ non corrigé
-- **Bug B** (line search pas combiné) — ❌ non corrigé
-- **Bug C** (encode/decode bornes) — ❌ non corrigé
-- **Bug D** (échappement `\u`) — ❌ non corrigé
-- **Bug E** (`as_u64` silencieux) — ❌ non corrigé
+> **Mise à jour post-audit.** Les chiffres ci-dessus sont le **constat au moment
+> de l'audit**. Depuis, **les 8 bugs A–H ont été corrigés** (correctifs validés,
+> property tests, clippy 0 warning, et désormais une CI qui le verrouille). Le
+> statut à jour est ci-dessous.
+
+### Statut des bugs hérités (à jour)
+- **Bug A** (dynamics.rs:85 saturation) — ✅ corrigé (saturation = moyenne D,M,R)
+- **Bug B** (line search pas combiné) — ✅ corrigé (garde-fou §4bis combiné)
+- **Bug C** (encode/decode bornes) — ✅ corrigé (bornes `decode` = `encode`, test étendu)
+- **Bug D** (échappement `\u`) — ✅ corrigé (paires de surrogates UTF-16, RFC 8259)
+- **Bug E** (`as_u64` silencieux) — ✅ corrigé (rejet NaN/∞/négatifs)
 
 ### Nouveaux bugs
-- **Bug F** (swarm join unwrap) — nouveau, mineur
-- **Bug G** (PapersKnowledge sous-processus non borné) — nouveau, modéré
-- **Bug H** (checkpoint validation dims) — nouveau, mineur
+- **Bug F** (swarm join unwrap) — ✅ corrigé (isolation des panics, `si_safe = −∞`)
+- **Bug G** (PapersKnowledge sous-processus non borné) — ✅ corrigé (timeout 30 s / 8 MiB)
+- **Bug H** (checkpoint validation dims) — ✅ corrigé (validation dimensionnelle au restore)
 
 ### Améliorations notables
 - ✅ Clippy : 7 warnings → 0
