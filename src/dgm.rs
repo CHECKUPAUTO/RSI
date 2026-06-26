@@ -1021,7 +1021,18 @@ impl<M: CodeModel> Proposer for LlmProposer<M> {
         let raw = self.model.complete(&prompt)?;
         let proposal = match parse_proposal(&raw) {
             Some(p) => p,
-            None => return Ok(None),
+            None => {
+                // Diagnostic : `RSI_DGM_DEBUG=1` affiche la réponse brute non
+                // parsée (utile pour ajuster prompt/parseur à un modèle donné).
+                if std::env::var("RSI_DGM_DEBUG").is_ok() {
+                    let preview: String = raw.chars().take(2000).collect();
+                    eprintln!(
+                        "[dgm] réponse LLM non parsée ({} chars) :\n{preview}\n--- fin ---",
+                        raw.len()
+                    );
+                }
+                return Ok(None);
+            }
         };
         // Garde-fou : ne jamais laisser le modèle s'échapper de la liste blanche.
         if !self.allowed_paths.iter().any(|a| a == &proposal.patch.target) {
@@ -1054,14 +1065,35 @@ fn line_value(raw: &str, key: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Extrait le texte entre les balises `<<<` / `>>>` qui suivent `key`.
+/// Extrait le bloc qui suit `key`. Accepte deux cadrages :
+///   1. les balises strictes `<<<` … `>>>` (format demandé) ;
+///   2. **repli** : un bloc clôturé par ``` ``` ``` ``` (les modèles de code en
+///      ajoutent presque toujours) — une éventuelle étiquette de langage sur la
+///      première ligne (```` ```rust ````) est ignorée.
 fn block_after(raw: &str, key: &str) -> Option<String> {
     let key_pos = raw.find(key)?;
     let after_key = &raw[key_pos + key.len()..];
-    let open = after_key.find("<<<")?;
-    let rest = &after_key[open + 3..];
-    let close = rest.find(">>>")?;
-    Some(rest[..close].trim_matches('\n').to_string())
+
+    if let Some(open) = after_key.find("<<<") {
+        let rest = &after_key[open + 3..];
+        if let Some(close) = rest.find(">>>") {
+            return Some(rest[..close].trim_matches('\n').to_string());
+        }
+    }
+
+    if let Some(open) = after_key.find("```") {
+        let rest = &after_key[open + 3..];
+        // saute l'étiquette de langage éventuelle jusqu'au 1ᵉʳ saut de ligne
+        let body = match rest.find('\n') {
+            Some(nl) => &rest[nl + 1..],
+            None => rest,
+        };
+        if let Some(close) = body.find("```") {
+            return Some(body[..close].trim_matches('\n').to_string());
+        }
+    }
+
+    None
 }
 
 // ════════════════════════════════ Moteur ═════════════════════════════════ //
@@ -1496,6 +1528,19 @@ RATIONALE: bump the constant
         assert_eq!(p.patch.find, "let x = 0;");
         assert_eq!(p.patch.replace, "let x = 1;");
         assert_eq!(p.rationale, "bump the constant");
+    }
+
+    #[test]
+    fn parses_fenced_proposal() {
+        // Un modèle de code rend souvent des blocs ``` au lieu de <<< >>>.
+        let raw = "TARGET: src/lib.rs\n\
+                   FIND:\n```rust\nlet x = 0;\n```\n\
+                   REPLACE:\n```rust\nlet x = 1;\n```\n\
+                   RATIONALE: bump\n";
+        let p = parse_proposal(raw).unwrap();
+        assert_eq!(p.patch.target, "src/lib.rs");
+        assert_eq!(p.patch.find, "let x = 0;");
+        assert_eq!(p.patch.replace, "let x = 1;");
     }
 
     #[test]
