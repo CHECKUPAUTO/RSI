@@ -450,5 +450,17 @@ Le LLM est une *source de propositions sous contrainte*, pas un pilote.
   (`--features llm-claude-ureq`, `--backend claude`). Validé bout-en-bout
   (`--steps 0` : référence évaluée par vrai `cargo build`+`test`, arbre intact ;
   validation d'args). clippy 0 warning (llm-ollama, +llm-claude-ureq).
+- ✅ **Ω concret + substrat mesuré SIMD** (extensions *additives* du moteur v9,
+  sans duplication ; suite à l'analyse de la proposition « RSI v9 » qui réinventait
+  un cœur déjà présent). (1) `src/omega_tasks.rs` : banc de 7 tâches réelles
+  nommées (profil explicite `(D,M,R,A,C,V)` + demande + μ), branché sur les traits
+  `CapabilityModel`/`CeilingModel` via `IntelligenceSurface::from_tasks` +
+  `task_breakdown` ; `report()` montre par tâche si le goulot est `Φ_x` (cognitif)
+  ou `g_x` (substrat). (2) `SimdMeasuredSubstrate` : `SubstrateImprover` ancrant
+  `measured_software_eff` sur l'efficience **SIMD réelle** de l'hôte (réduction
+  sérielle vs vectorisée), même *ratchet* monotone que `MeasuredSubstrate` ;
+  `scirust-rsi` n'exposant pas de métrique matérielle, la mesure est en-process.
+  Démo `examples/omega_real.rs`. 161 tests + doctests, clippy 0 warning (défaut +
+  features publiques), CI verte (dépôt public).
 - ⏭️ **Reste** : vérification formelle creusot/loom (P0.4) — outillage + temps
   expert ; non bloquant.

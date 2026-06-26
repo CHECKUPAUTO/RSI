@@ -207,8 +207,13 @@ Chaque [`StepReport`](src/agent.rs) expose :
     source : `CorpusKnowledge` (documents) et **`PapersKnowledge`** (ingestion de
     papiers via **PAPERS en sous-processus**, sans dépendance, dégradation propre) ;
     `RSIAgent::with_knowledge`.
-  - `measured_substrate.rs` — `MeasuredSubstrate` : `P_eff` **mesuré nativement**
-    (kernel CPU chronométré, sans Forge ni GPU).
+  - `measured_substrate.rs` — `P_eff` **mesuré nativement** : `MeasuredSubstrate`
+    (kernel CPU/tuilage cache chronométré) et **`SimdMeasuredSubstrate`**
+    (efficience **SIMD/vectorisation** réelle de l'hôte) — sans Forge ni GPU.
+  - `omega_tasks.rs` — **Ω concret** : banc de tâches réelles *nommées* (profil
+    explicite `(D,M,R,A,C,V)`, demande, μ) branché sur les traits `Φ`/`g`
+    existants ; rapport par tâche montrant le goulot (`Φ_x` cognitif vs `g_x`
+    substrat). Démo : `cargo run --release --example omega_real`.
   - **ε adaptatif** au bruit Monte-Carlo (`si_global_stats`, `adaptive_epsilon`).
   - introspection : `RSIAgent::active_backends()`.
 - **Validation empirique** : banc d'ablation `cargo run --release --bin rsi-ablate`
@@ -363,6 +368,7 @@ src/
 ├── state.rs        §2  S = (D,M,R,A,C,V)
 ├── substrate.rs    §3  P_eff = σ(HᵀAH)·σ(OᵀBO)·σ(HᵀCO)
 ├── surface.rs      §1  Σ_I, C_réel = min(Φ,g), SI_global + traits Φ/g
+├── omega_tasks.rs  §1  Ω concret : banc de tâches réelles nommées (Φ vs g par tâche)
 ├── dynamics.rs     §4  dS/dt + contraintes ‖ΔS‖<λ et non-régression ε
 ├── meta.rs         §5  ℳ, trait MetaSearch, recherche aléatoire + CMA-ES
 ├── cma.rs          §5  sep-CMA-ES (covariance diagonale)
