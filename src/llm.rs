@@ -377,14 +377,22 @@ fn build_request(host: &str, port: u16, model: &str, prompt: &str) -> String {
 }
 
 /// Extrait les propositions (une par ligne non vide) d'une réponse HTTP Ollama
-/// non-streamée (fonction pure, testable hors-ligne). Suppose un corps
-/// non chunké (Ollama envoie Content-Length en mode `stream:false`).
+/// non-streamée (fonction pure, testable hors-ligne).
+///
+/// Gère **les deux cadrages** : `Content-Length` (corps brut) **et**
+/// `Transfer-Encoding: chunked` — qu'Ollama emploie même en `stream:false`
+/// (sinon les préfixes de taille hexadécimaux des chunks parviennent au parseur
+/// JSON, d'où des erreurs « token inattendu 'a' »).
 #[cfg(feature = "llm-ollama")]
 fn parse_response(raw: &str) -> Result<Vec<String>, LlmError> {
-    let body = raw
+    let (headers, body) = raw
         .split_once("\r\n\r\n")
-        .map(|(_, b)| b)
         .ok_or_else(|| LlmError::Backend("réponse HTTP sans corps".to_string()))?;
+    let body = if header_is_chunked(headers) {
+        dechunk(body)
+    } else {
+        body.to_string()
+    };
     let json = crate::json::Json::parse(body.trim())
         .map_err(|e| LlmError::Backend(format!("JSON Ollama invalide: {e}")))?;
     let text = json
@@ -401,6 +409,61 @@ fn parse_response(raw: &str) -> Result<Vec<String>, LlmError> {
     } else {
         Ok(props)
     }
+}
+
+/// Vrai si les en-têtes HTTP déclarent `Transfer-Encoding: chunked`.
+#[cfg(feature = "llm-ollama")]
+fn header_is_chunked(headers: &str) -> bool {
+    headers.lines().any(|l| {
+        let l = l.to_ascii_lowercase();
+        l.starts_with("transfer-encoding:") && l.contains("chunked")
+    })
+}
+
+/// Décode un corps HTTP en *chunked transfer-encoding* : suite de
+/// `<taille hex>\r\n<données>\r\n`, terminée par un chunk de taille 0.
+/// Opère sur les octets (les tailles sont des comptes d'octets) puis recompose
+/// en UTF-8 — robuste aux contenus multi-octets.
+#[cfg(feature = "llm-ollama")]
+fn dechunk(body: &str) -> String {
+    let b = body.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0usize;
+    while i < b.len() {
+        let line_end = match find_crlf(b, i) {
+            Some(e) => e,
+            None => break,
+        };
+        // la taille peut être suivie d'extensions « ;… » à ignorer
+        let size_hex = std::str::from_utf8(&b[i..line_end])
+            .unwrap_or("")
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim();
+        let size = usize::from_str_radix(size_hex, 16).unwrap_or(0);
+        i = line_end + 2; // saute le CRLF de la ligne de taille
+        if size == 0 {
+            break; // dernier chunk
+        }
+        let end = (i + size).min(b.len());
+        out.extend_from_slice(&b[i..end]);
+        i = end + 2; // saute les données + le CRLF de fin de chunk
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Indice du prochain `\r\n` à partir de `from` (inclus), ou `None`.
+#[cfg(feature = "llm-ollama")]
+fn find_crlf(b: &[u8], from: usize) -> Option<usize> {
+    let mut i = from;
+    while i + 1 < b.len() {
+        if b[i] == b'\r' && b[i + 1] == b'\n' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
 #[cfg(feature = "llm-ollama")]
@@ -760,6 +823,34 @@ mod ollama_tests {
         let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n\
                     {\"response\":\"alpha\\nbeta\\n\\n  gamma  \",\"done\":true}";
         assert_eq!(parse_response(resp).unwrap(), vec!["alpha", "beta", "gamma"]);
+    }
+
+    #[test]
+    fn parses_chunked_ollama_response() {
+        // Ollama réel (Jetson) renvoie `Transfer-Encoding: chunked` même en
+        // stream:false : le corps est cadré par des tailles hex. Régression du
+        // bug « JSON Ollama invalide: token inattendu 'a' ».
+        let json = "{\"response\":\"alpha\\nbeta\",\"done\":true}";
+        let size = format!("{:x}", json.len());
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Transfer-Encoding: chunked\r\n\r\n{size}\r\n{json}\r\n0\r\n\r\n"
+        );
+        assert_eq!(parse_response(&resp).unwrap(), vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn parses_multichunk_ollama_response() {
+        // corps réparti sur plusieurs chunks (cas streaming agrégé / MTU).
+        let p1 = "{\"response\":\"al";
+        let p2 = "pha\",\"done\":true}";
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\
+             {s1:x}\r\n{p1}\r\n{s2:x}\r\n{p2}\r\n0\r\n\r\n",
+            s1 = p1.len(),
+            s2 = p2.len(),
+        );
+        assert_eq!(parse_response(&resp).unwrap(), vec!["alpha"]);
     }
 
     #[test]
