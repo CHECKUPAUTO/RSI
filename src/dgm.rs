@@ -953,14 +953,18 @@ impl<C: crate::llm::LlmClient> LlmCodeModel<C> {
 
 impl<C: crate::llm::LlmClient> CodeModel for LlmCodeModel<C> {
     fn complete(&self, prompt: &str) -> Result<String> {
-        let mut out = self
+        // Les `LlmClient` (p. ex. Ollama) découpent la réponse en **une chaîne
+        // par ligne non vide** — adapté aux domaines de raffinement (1 candidat
+        // par ligne). Mais DGM a besoin de la **complétion multi-ligne entière**
+        // (enveloppe TARGET/FIND/REPLACE) : on **recompose** donc les lignes.
+        let out = self
             .client
             .propose(prompt, 1)
             .map_err(|e| DgmError::Proposer(format!("{e:?}")))?;
         if out.is_empty() {
             return Err(DgmError::Proposer("backend returned no completion".to_string()));
         }
-        Ok(out.remove(0))
+        Ok(out.join("\n"))
     }
 }
 
@@ -1546,6 +1550,40 @@ RATIONALE: bump the constant
     #[test]
     fn off_format_yields_none() {
         assert!(parse_proposal("I think you should change something.").is_none());
+    }
+
+    #[test]
+    fn llm_code_model_rejoins_split_lines() {
+        // Un LlmClient (style Ollama) rend une chaîne PAR LIGNE ; le modèle de
+        // code DGM doit recomposer la complétion multi-ligne entière, pas se
+        // limiter à la 1ʳᵉ ligne (régression du bug Jetson « raw = 21 chars »).
+        struct LineClient;
+        impl crate::llm::LlmClient for LineClient {
+            fn propose(
+                &self,
+                _p: &str,
+                _k: usize,
+            ) -> std::result::Result<Vec<String>, crate::llm::LlmError> {
+                Ok(vec![
+                    "TARGET: a.rs".into(),
+                    "FIND:".into(),
+                    "<<<".into(),
+                    "let x = 0;".into(),
+                    ">>>".into(),
+                    "REPLACE:".into(),
+                    "<<<".into(),
+                    "let x = 1;".into(),
+                    ">>>".into(),
+                    "RATIONALE: bump".into(),
+                ])
+            }
+        }
+        let model = LlmCodeModel::new(LineClient);
+        let raw = model.complete("prompt").unwrap();
+        let p = parse_proposal(&raw).expect("doit parser après recomposition");
+        assert_eq!(p.patch.target, "a.rs");
+        assert_eq!(p.patch.find, "let x = 0;");
+        assert_eq!(p.patch.replace, "let x = 1;");
     }
 
     #[test]
