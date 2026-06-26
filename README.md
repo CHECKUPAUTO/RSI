@@ -214,6 +214,10 @@ Chaque [`StepReport`](src/agent.rs) expose :
     explicite `(D,M,R,A,C,V)`, demande, μ) branché sur les traits `Φ`/`g`
     existants ; rapport par tâche montrant le goulot (`Φ_x` cognitif vs `g_x`
     substrat). Démo : `cargo run --release --example omega_real`.
+  - `hw_probe.rs` — **sonde matérielle réelle** (CPU/mémoire `/proc`, GPU sysfs
+    Tegra ou `nvidia-smi`) qui ancre le vecteur `H` du substrat sur l'état
+    machine. Dégradation propre (GPU absent → neutre). Idéal **Jetson** :
+    `cargo run --release --example jetson_substrate`.
   - **ε adaptatif** au bruit Monte-Carlo (`si_global_stats`, `adaptive_epsilon`).
   - introspection : `RSIAgent::active_backends()`.
 - **Validation empirique** : banc d'ablation `cargo run --release --bin rsi-ablate`
@@ -369,6 +373,7 @@ src/
 ├── substrate.rs    §3  P_eff = σ(HᵀAH)·σ(OᵀBO)·σ(HᵀCO)
 ├── surface.rs      §1  Σ_I, C_réel = min(Φ,g), SI_global + traits Φ/g
 ├── omega_tasks.rs  §1  Ω concret : banc de tâches réelles nommées (Φ vs g par tâche)
+├── hw_probe.rs     §3  sonde matérielle réelle (CPU/mém/GPU) → vecteur H du substrat
 ├── dynamics.rs     §4  dS/dt + contraintes ‖ΔS‖<λ et non-régression ε
 ├── meta.rs         §5  ℳ, trait MetaSearch, recherche aléatoire + CMA-ES
 ├── cma.rs          §5  sep-CMA-ES (covariance diagonale)

@@ -60,6 +60,8 @@ pub mod forge_meta;
 #[cfg(feature = "forge")]
 pub mod forge_substrate;
 pub mod dynamics;
+// Sonde matérielle réelle (CPU/mém/GPU) pour ancrer le substrat — utile sur Jetson.
+pub mod hw_probe;
 pub mod json;
 pub mod knowledge;
 pub mod linalg;
