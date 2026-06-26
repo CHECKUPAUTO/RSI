@@ -68,6 +68,8 @@ pub mod measured_substrate;
 pub mod memory;
 pub mod meta;
 pub mod obs;
+// Ω concret : banc de tâches réelles nommées (extension de §1, sans duplication).
+pub mod omega_tasks;
 pub mod plot;
 pub mod prompt;
 pub mod tasks;

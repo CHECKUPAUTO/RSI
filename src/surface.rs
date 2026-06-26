@@ -171,6 +171,52 @@ impl IntelligenceSurface {
         IntelligenceSurface { tasks, demand, weights, capability, ceiling }
     }
 
+    /// Construit une surface à partir de tâches **explicites** (Ω *curé*, pas
+    /// échantillonné aléatoirement). Les `demand` sont clampés dans `[0,1]`
+    /// (valeurs absolues respectées, pas de renormalisation) ; les `weights`
+    /// sont normalisés (∑ = 1) pour que `SI_global` reste une moyenne pondérée.
+    ///
+    /// Panique si les longueurs diffèrent ou si `tasks` est vide.
+    pub fn from_tasks(
+        tasks: Vec<[f64; 6]>,
+        demand: Vec<f64>,
+        weights: Vec<f64>,
+        capability: Box<dyn CapabilityModel>,
+        ceiling: Box<dyn CeilingModel>,
+    ) -> Self {
+        assert!(!tasks.is_empty(), "Ω ne peut pas être vide");
+        assert_eq!(tasks.len(), demand.len(), "demand: longueur ≠ tâches");
+        assert_eq!(tasks.len(), weights.len(), "weights: longueur ≠ tâches");
+
+        let demand: Vec<f64> = demand.iter().map(|d| d.clamp(0.0, 1.0)).collect();
+        let sum_w: f64 = weights.iter().sum::<f64>().max(1e-12);
+        let weights: Vec<f64> = weights.iter().map(|w| w / sum_w).collect();
+
+        IntelligenceSurface { tasks, demand, weights, capability, ceiling }
+    }
+
+    /// Décomposition **par tâche** : `(Φ_x, g_x, C_réel = min(Φ,g))`.
+    ///
+    /// Permet de voir, tâche par tâche, si le goulot est **cognitif** (`Φ < g`)
+    /// ou **substrat** (`g < Φ`) — c.-à-d. comment `Φ_x` et `g_x` s'opposent.
+    pub fn task_breakdown(
+        &self,
+        state: &CognitiveState,
+        substrate: &Substrate,
+    ) -> Vec<(f64, f64, f64)> {
+        let p_eff = substrate.effective_power();
+        let caps = state.capability_array();
+        self.tasks
+            .iter()
+            .zip(&self.demand)
+            .map(|(task, &dem)| {
+                let phi = self.capability.phi(task, &caps);
+                let g = self.ceiling.g(p_eff, dem);
+                (phi, g, phi.min(g))
+            })
+            .collect()
+    }
+
     /// C_réel(x,t) = min( Φ_x(S), g_x(P_eff) ) pour chaque tâche de Ω.
     pub fn real_capability(&self, state: &CognitiveState, substrate: &Substrate) -> Vec<f64> {
         let p_eff = substrate.effective_power();
