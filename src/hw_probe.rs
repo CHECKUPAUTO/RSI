@@ -38,6 +38,10 @@ pub struct HardwareSnapshot {
     pub mem_used_frac: f64,
     /// Charge GPU `[0,1]` si lisible (Jetson sysfs ou `nvidia-smi`), sinon `None`.
     pub gpu_load_frac: Option<f64>,
+    /// Fraction de VRAM utilisée `[0,1]` si lisible (`nvidia-smi`), sinon `None`.
+    /// Décisif pour les charges LLM : un modèle chargé sature la VRAM même à 0 %
+    /// de calcul. Sur Jetson la mémoire est **unifiée** (VRAM ≈ RAM système).
+    pub gpu_mem_used_frac: Option<f64>,
     /// D'où vient la mesure GPU (diagnostic) : `"sysfs:<path>"`, `"nvidia-smi"`,
     /// ou `"absent"`.
     pub gpu_source: String,
@@ -56,18 +60,35 @@ impl HardwareSnapshot {
 
         let mem_used_frac = read_mem_used_frac().unwrap_or(0.0);
 
-        let (gpu_load_frac, gpu_source) = read_gpu_load();
+        let gpu = read_gpu();
+        let gpu_load_frac = gpu.as_ref().map(|g| g.load);
+        let gpu_mem_used_frac = gpu.as_ref().and_then(|g| g.mem_used_frac);
+        let gpu_source = gpu.map(|g| g.source).unwrap_or_else(|| "absent".to_string());
 
-        HardwareSnapshot { cpu_count, cpu_load_frac, mem_used_frac, gpu_load_frac, gpu_source }
+        HardwareSnapshot {
+            cpu_count,
+            cpu_load_frac,
+            mem_used_frac,
+            gpu_load_frac,
+            gpu_mem_used_frac,
+            gpu_source,
+        }
     }
 
     /// Vecteur matériel `H` (capacité **disponible** ∈ `[0,1]`) :
-    /// `[cpu_dispo, mem_dispo, gpu_dispo]`. GPU absent ⇒ capacité neutre `0.5`.
+    /// `[cpu_dispo, mem_dispo, gpu_dispo]`. La capacité GPU disponible combine
+    /// l'idle de calcul **et** la VRAM libre (le min : la ressource la plus
+    /// rare borne). GPU absent ⇒ capacité neutre `0.5`.
     pub fn hardware_vector(&self) -> Vec<f64> {
+        let gpu_avail = match (self.gpu_load_frac, self.gpu_mem_used_frac) {
+            (Some(load), Some(mem)) => (1.0 - load).min(1.0 - mem).clamp(0.0, 1.0),
+            (Some(load), None) => (1.0 - load).clamp(0.0, 1.0),
+            _ => 0.5,
+        };
         vec![
             (1.0 - self.cpu_load_frac).clamp(0.0, 1.0),
             (1.0 - self.mem_used_frac).clamp(0.0, 1.0),
-            self.gpu_load_frac.map(|g| (1.0 - g).clamp(0.0, 1.0)).unwrap_or(0.5),
+            gpu_avail,
         ]
     }
 }
@@ -125,32 +146,47 @@ const GPU_SYSFS: &[&str] = &[
     "/sys/class/devfreq/gpu.0/device/load",
 ];
 
-/// Charge GPU `[0,1]` : essaie sysfs (per-mille), puis `nvidia-smi` (%).
-fn read_gpu_load() -> (Option<f64>, String) {
+/// Lecture GPU normalisée.
+struct GpuReading {
+    /// Charge de calcul ∈ `[0,1]`.
+    load: f64,
+    /// Fraction de VRAM utilisée ∈ `[0,1]` si disponible.
+    mem_used_frac: Option<f64>,
+    /// Origine de la mesure (diagnostic).
+    source: String,
+}
+
+/// Lit le GPU : sysfs Tegra (charge seule ; VRAM unifiée avec la RAM système),
+/// sinon `nvidia-smi` (charge + VRAM). `None` si aucun GPU lisible.
+fn read_gpu() -> Option<GpuReading> {
     for path in GPU_SYSFS {
         if let Ok(s) = std::fs::read_to_string(path) {
             if let Ok(permille) = s.trim().parse::<f64>() {
-                return (Some((permille / 1000.0).clamp(0.0, 1.0)), format!("sysfs:{path}"));
+                return Some(GpuReading {
+                    load: (permille / 1000.0).clamp(0.0, 1.0),
+                    mem_used_frac: None,
+                    source: format!("sysfs:{path}"),
+                });
             }
         }
     }
-    if let Some(pct) = read_gpu_via_nvidia_smi() {
-        return (Some((pct / 100.0).clamp(0.0, 1.0)), "nvidia-smi".to_string());
-    }
-    (None, "absent".to_string())
+    read_gpu_via_nvidia_smi()
 }
 
-/// `nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits`
-/// (sous-processus **borné** : 2 s, sortie plafonnée). `None` si indisponible.
-fn read_gpu_via_nvidia_smi() -> Option<f64> {
+/// `nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total` (CSV).
+/// Sous-processus **borné** (2 s, sortie plafonnée). Moyenne sur les GPU listés.
+fn read_gpu_via_nvidia_smi() -> Option<GpuReading> {
     const TIMEOUT: Duration = Duration::from_secs(2);
     const MAX_OUTPUT: u64 = 64 * 1024;
 
     let mut cmd = Command::new("nvidia-smi");
-    cmd.args(["--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    cmd.args([
+        "--query-gpu=utilization.gpu,memory.used,memory.total",
+        "--format=csv,noheader,nounits",
+    ])
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null());
     let mut child = cmd.spawn().ok()?;
 
     let stdout = child.stdout.take()?;
@@ -183,16 +219,32 @@ fn read_gpu_via_nvidia_smi() -> Option<f64> {
 
     let buf = rx.recv_timeout(Duration::from_secs(1)).ok()?;
     let text = String::from_utf8_lossy(&buf);
-    // moyenne des GPU listés (une valeur par ligne)
-    let vals: Vec<f64> = text
-        .lines()
-        .filter_map(|l| l.trim().parse::<f64>().ok())
-        .collect();
-    if vals.is_empty() {
+
+    // chaque ligne : "util, mem_used, mem_total" → moyenne sur les GPU.
+    let mut loads = Vec::new();
+    let mut mem_fracs = Vec::new();
+    for line in text.lines() {
+        let f: Vec<f64> = line
+            .split(',')
+            .filter_map(|t| t.trim().parse::<f64>().ok())
+            .collect();
+        if let Some(&u) = f.first() {
+            loads.push((u / 100.0).clamp(0.0, 1.0));
+        }
+        if f.len() >= 3 && f[2] > 0.0 {
+            mem_fracs.push((f[1] / f[2]).clamp(0.0, 1.0));
+        }
+    }
+    if loads.is_empty() {
+        return None;
+    }
+    let load = loads.iter().sum::<f64>() / loads.len() as f64;
+    let mem_used_frac = if mem_fracs.is_empty() {
         None
     } else {
-        Some(vals.iter().sum::<f64>() / vals.len() as f64)
-    }
+        Some(mem_fracs.iter().sum::<f64>() / mem_fracs.len() as f64)
+    };
+    Some(GpuReading { load, mem_used_frac, source: "nvidia-smi".to_string() })
 }
 
 #[cfg(test)]
@@ -207,6 +259,9 @@ mod tests {
         assert!((0.0..=1.0).contains(&s.mem_used_frac));
         if let Some(g) = s.gpu_load_frac {
             assert!((0.0..=1.0).contains(&g));
+        }
+        if let Some(m) = s.gpu_mem_used_frac {
+            assert!((0.0..=1.0).contains(&m));
         }
     }
 

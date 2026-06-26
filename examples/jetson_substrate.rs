@@ -34,7 +34,13 @@ fn main() {
     );
     println!("  Mémoire : {:.0}% utilisée", 100.0 * snap.mem_used_frac);
     match snap.gpu_load_frac {
-        Some(g) => println!("  GPU   : {:.0}% ({})", 100.0 * g, snap.gpu_source),
+        Some(g) => {
+            let vram = snap
+                .gpu_mem_used_frac
+                .map(|m| format!(", VRAM {:.0}% utilisée", 100.0 * m))
+                .unwrap_or_else(|| ", VRAM n/d (mémoire unifiée)".to_string());
+            println!("  GPU   : {:.0}% calcul{} ({})", 100.0 * g, vram, snap.gpu_source);
+        }
         None => println!("  GPU   : absent/non lisible ({}) → H[2] neutre", snap.gpu_source),
     }
     println!("  vecteur matériel H (capacité dispo) = {:?}", snap.hardware_vector());
