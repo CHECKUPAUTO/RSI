@@ -1001,19 +1001,43 @@ impl<M: CodeModel> LlmProposer<M> {
             }
         }
 
+        // Contenu ACTUEL des fichiers éditables : sans lui, le modèle invente du
+        // code inexistant et son `FIND` ne matche jamais. On borne chaque fichier
+        // pour garder le prompt raisonnable.
+        const MAX_FILE_CHARS: usize = 8_000;
+        let mut sources = String::new();
+        for path in &self.allowed_paths {
+            match ctx.read(path) {
+                Ok(content) => {
+                    let shown: String = content.chars().take(MAX_FILE_CHARS).collect();
+                    let truncated = if content.len() > shown.len() {
+                        "\n// … (tronqué) …"
+                    } else {
+                        ""
+                    };
+                    sources.push_str(&format!("\n----- {path} -----\n{shown}{truncated}\n"));
+                }
+                Err(_) => sources.push_str(&format!("\n----- {path} (illisible) -----\n")),
+            }
+        }
+
         format!(
             "You are improving a Rust codebase. Goal: {goal}\n\
              Parent fitness: {fitness}\n\
-             You may ONLY edit these files: {allowed}\n{lessons}\n\
-             Propose ONE small, safe, compiling change. Respond EXACTLY in this format \
-             and nothing else:\n\
+             You may ONLY edit these files: {allowed}\n\
+             Here is their CURRENT content — your FIND text MUST be copied \
+             verbatim from it (exact, occurring once):\n{sources}\n{lessons}\n\
+             Propose ONE small, safe, compiling change. The FIND block must be an \
+             EXACT substring of the file above. Respond EXACTLY in this format and \
+             nothing else (close every code fence):\n\
              TARGET: <relative/path.rs>\n\
-             FIND:\n<<<\n<exact text that currently exists, occurring once>\n>>>\n\
+             FIND:\n<<<\n<exact existing text, occurring once>\n>>>\n\
              REPLACE:\n<<<\n<the replacement text>\n>>>\n\
              RATIONALE: <one short line>\n",
             goal = ctx.goal,
             fitness = fitness,
             allowed = self.allowed_paths.join(", "),
+            sources = sources,
             lessons = lessons,
         )
     }
@@ -1094,6 +1118,17 @@ fn block_after(raw: &str, key: &str) -> Option<String> {
         };
         if let Some(close) = body.find("```") {
             return Some(body[..close].trim_matches('\n').to_string());
+        }
+        // repli : fence non fermée (fréquent) → jusqu'au prochain marqueur de
+        // section (REPLACE/RATIONALE/TARGET) ou la fin.
+        let cut = ["\nREPLACE:", "\nRATIONALE:", "\nTARGET:"]
+            .iter()
+            .filter_map(|m| body.find(m))
+            .min()
+            .unwrap_or(body.len());
+        let block = body[..cut].trim_matches('\n').trim_end_matches('`').trim_matches('\n');
+        if !block.is_empty() {
+            return Some(block.to_string());
         }
     }
 
@@ -1545,6 +1580,20 @@ RATIONALE: bump the constant
         assert_eq!(p.patch.target, "src/lib.rs");
         assert_eq!(p.patch.find, "let x = 0;");
         assert_eq!(p.patch.replace, "let x = 1;");
+    }
+
+    #[test]
+    fn parses_unclosed_replace_fence() {
+        // Cas réel Jetson : le modèle oublie de fermer la fence du REPLACE et
+        // enchaîne sur RATIONALE. On doit quand même extraire le bloc.
+        let raw = "TARGET: a.rs\n\
+                   FIND:\n```\nlet x = 0;\n```\n\
+                   REPLACE:\n```\nlet x = 1;\n}\n\
+                   RATIONALE: fix\n";
+        let p = parse_proposal(raw).unwrap();
+        assert_eq!(p.patch.find, "let x = 0;");
+        assert!(p.patch.replace.contains("let x = 1;"));
+        assert!(!p.patch.replace.contains("RATIONALE"));
     }
 
     #[test]
