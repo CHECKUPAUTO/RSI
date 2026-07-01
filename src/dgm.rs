@@ -1138,12 +1138,13 @@ impl<M: CodeModel> Proposer for LlmProposer<M> {
     }
 }
 
-/// Parse l'enveloppe stricte. Rend `None` si le modèle est hors-format — la
-/// boucle traite cela comme « pas de proposition », jamais comme un crash.
+/// Parse l'enveloppe. Rend `None` si le modèle est hors-format — la boucle
+/// traite cela comme « pas de proposition », jamais comme un crash.
 fn parse_proposal(raw: &str) -> Option<Proposal> {
     let target = line_value(raw, "TARGET:")?;
-    let find = block_after(raw, "FIND:")?;
-    let replace = block_after(raw, "REPLACE:")?;
+    // FIND est borné par `REPLACE:` ; REPLACE par `RATIONALE:` (ou la fin).
+    let find = extract_block(raw, "FIND:", &["REPLACE:"])?;
+    let replace = extract_block(raw, "REPLACE:", &["RATIONALE:", "TARGET:"])?;
     let rationale = line_value(raw, "RATIONALE:").unwrap_or_else(|| "llm proposal".to_string());
     if find.is_empty() || find == replace {
         return None;
@@ -1157,46 +1158,53 @@ fn line_value(raw: &str, key: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Extrait le bloc qui suit `key`. Accepte deux cadrages :
-///   1. les balises strictes `<<<` … `>>>` (format demandé) ;
-///   2. **repli** : un bloc clôturé par ``` ``` ``` ``` (les modèles de code en
-///      ajoutent presque toujours) — une éventuelle étiquette de langage sur la
-///      première ligne (```` ```rust ````) est ignorée.
-fn block_after(raw: &str, key: &str) -> Option<String> {
+/// Extrait le bloc qui suit `key`, borné par le prochain marqueur de section
+/// `ends` (ou la fin). Accepte **trois cadrages**, du plus strict au plus
+/// permissif (les modèles varient d'une réponse à l'autre) :
+///   1. balises strictes `<<<` … `>>>` ;
+///   2. bloc clôturé par ``` ``` ``` ``` (étiquette de langage ```` ```rust ````
+///      ignorée ; tolère une fence non fermée) ;
+///   3. **brut** : le texte entre la ligne `key` et le prochain marqueur — cas
+///      fréquent où le modèle colle le code directement après `FIND:`/`REPLACE:`
+///      sans délimiteur.
+fn extract_block(raw: &str, key: &str, ends: &[&str]) -> Option<String> {
     let key_pos = raw.find(key)?;
-    let after_key = &raw[key_pos + key.len()..];
+    let after = &raw[key_pos + key.len()..];
+    // borne : jusqu'au 1ᵉʳ marqueur de section suivant (isole les sections).
+    let bound = ends.iter().filter_map(|m| after.find(m)).min().unwrap_or(after.len());
+    let region = &after[..bound];
 
-    if let Some(open) = after_key.find("<<<") {
-        let rest = &after_key[open + 3..];
+    // 1) <<< … >>>
+    if let Some(open) = region.find("<<<") {
+        let rest = &region[open + 3..];
         if let Some(close) = rest.find(">>>") {
             return Some(rest[..close].trim_matches('\n').to_string());
         }
     }
-
-    if let Some(open) = after_key.find("```") {
-        let rest = &after_key[open + 3..];
-        // saute l'étiquette de langage éventuelle jusqu'au 1ᵉʳ saut de ligne
+    // 2) ``` … ```  (fence, éventuellement non fermée dans la région)
+    if let Some(open) = region.find("```") {
+        let rest = &region[open + 3..];
         let body = match rest.find('\n') {
             Some(nl) => &rest[nl + 1..],
             None => rest,
         };
-        if let Some(close) = body.find("```") {
-            return Some(body[..close].trim_matches('\n').to_string());
-        }
-        // repli : fence non fermée (fréquent) → jusqu'au prochain marqueur de
-        // section (REPLACE/RATIONALE/TARGET) ou la fin.
-        let cut = ["\nREPLACE:", "\nRATIONALE:", "\nTARGET:"]
-            .iter()
-            .filter_map(|m| body.find(m))
-            .min()
-            .unwrap_or(body.len());
-        let block = body[..cut].trim_matches('\n').trim_end_matches('`').trim_matches('\n');
+        let end = body.find("```").unwrap_or(body.len());
+        let block = body[..end].trim_matches('\n');
         if !block.is_empty() {
             return Some(block.to_string());
         }
     }
-
-    None
+    // 3) brut : région après la 1ʳᵉ ligne (reste de la ligne `key`, souvent vide)
+    let body = match region.find('\n') {
+        Some(nl) => &region[nl + 1..],
+        None => region,
+    };
+    let block = body.trim_matches('\n');
+    if block.is_empty() {
+        None
+    } else {
+        Some(block.to_string())
+    }
 }
 
 // ════════════════════════════════ Moteur ═════════════════════════════════ //
@@ -1698,6 +1706,23 @@ RATIONALE: bump the constant
         let p = parse_proposal(raw).unwrap();
         assert_eq!(p.patch.find, "let x = 0;");
         assert!(p.patch.replace.contains("let x = 1;"));
+        assert!(!p.patch.replace.contains("RATIONALE"));
+    }
+
+    #[test]
+    fn parses_undelimited_proposal() {
+        // Cas réel Jetson : le modèle colle le code brut après FIND:/REPLACE:
+        // sans <<< ni ``` — borné par le marqueur de section suivant.
+        let raw = "TARGET: src/m.rs\n\
+                   FIND:\n\
+                   fn f() {\n    let x = 0;\n}\n\
+                   REPLACE:\n\
+                   fn f() {\n    let x = 1;\n}\n\
+                   RATIONALE: bump\n";
+        let p = parse_proposal(raw).unwrap();
+        assert_eq!(p.patch.target, "src/m.rs");
+        assert_eq!(p.patch.find, "fn f() {\n    let x = 0;\n}");
+        assert_eq!(p.patch.replace, "fn f() {\n    let x = 1;\n}");
         assert!(!p.patch.replace.contains("RATIONALE"));
     }
 
