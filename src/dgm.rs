@@ -754,6 +754,13 @@ pub struct CargoEvaluator {
     pub test_args: Vec<String>,
     /// Récompense scalaire = taux de réussite des tests (sinon 0.0).
     pub score_from_passrate: bool,
+    /// **Option B — score par BENCHMARK** : si non vide, ce sont les arguments
+    /// `cargo` d'une commande exécutée *après* le passage des barrières
+    /// compile+tests, dont la sortie doit contenir `RSI_BENCH_SCORE=<f64>`
+    /// (plus grand = mieux). Le score de fitness devient alors cette **perf
+    /// réelle mesurée** — « optimise X » a enfin un gradient. Ex. :
+    /// `["run", "--release", "--example", "bench_dot"]`. Vide ⇒ pass-rate.
+    pub bench_command: Vec<String>,
     /// Délai max par invocation `cargo` (anti-blocage).
     pub timeout: Duration,
     /// Plafond d'octets capturés par flux (anti-OOM).
@@ -766,6 +773,7 @@ impl Default for CargoEvaluator {
             package_subdir: PathBuf::new(),
             test_args: Vec::new(),
             score_from_passrate: true,
+            bench_command: Vec::new(),
             timeout: Duration::from_secs(300),
             max_output: 4 * 1024 * 1024,
         }
@@ -794,26 +802,61 @@ impl Evaluator for CargoEvaluator {
         let (test_ok, out) = run_bounded(test, self.timeout, self.max_output)
             .map_err(|e| DgmError::Evaluation(format!("cargo test: {e}")))?;
         let (passed, failed) = parse_test_counts(&out);
-
-        let score = if self.score_from_passrate {
+        let passrate = {
             let total = passed + failed;
             if total == 0 { 0.0 } else { passed as f64 / total as f64 }
+        };
+
+        // 3. Score. Option B : si un benchmark est configuré ET que les tests
+        // sont tout-au-vert (inutile de mesurer la perf d'un code cassé, et la
+        // barrière compile/tests domine de toute façon l'ordre de fitness), on
+        // exécute le bench et on prend `RSI_BENCH_SCORE` comme score (perf
+        // réelle, plus grand = mieux). Sinon, pass-rate (comportement d'origine).
+        let mut notes = if test_ok {
+            "all tests passed".to_string()
+        } else {
+            format!("tests failed:\n{}", tail(&out, 1500))
+        };
+        let all_green = failed == 0;
+        let score = if !self.bench_command.is_empty() && all_green {
+            let mut bench = Command::new("cargo");
+            bench.current_dir(&dir);
+            for a in &self.bench_command {
+                bench.arg(a);
+            }
+            let (bench_ok, bench_out) = run_bounded(bench, self.timeout, self.max_output)
+                .map_err(|e| DgmError::Evaluation(format!("cargo bench cmd: {e}")))?;
+            match parse_bench_score(&bench_out) {
+                Some(s) if bench_ok => {
+                    notes = format!("all green; RSI_BENCH_SCORE={s}");
+                    s
+                }
+                // bench échoué / score absent ⇒ neutre (pass-rate), pas d'accept
+                // sur une mesure manquante.
+                _ => {
+                    notes = "all green; bench sans score → pass-rate".to_string();
+                    passrate
+                }
+            }
+        } else if self.score_from_passrate {
+            passrate
         } else {
             0.0
         };
 
-        Ok(Fitness {
-            compiles: true,
-            tests_passed: passed,
-            tests_failed: failed,
-            score,
-            notes: if test_ok {
-                "all tests passed".to_string()
-            } else {
-                format!("tests failed:\n{}", tail(&out, 1500))
-            },
-        })
+        Ok(Fitness { compiles: true, tests_passed: passed, tests_failed: failed, score, notes })
     }
+}
+
+/// Extrait la dernière valeur `RSI_BENCH_SCORE=<f64>` d'une sortie de bench
+/// (fonction pure, testable). `None` si absente ou non finie.
+fn parse_bench_score(output: &str) -> Option<f64> {
+    output.lines().rev().find_map(|l| {
+        l.trim()
+            .strip_prefix("RSI_BENCH_SCORE=")
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|s| s.is_finite())
+    })
 }
 
 /// Lance une commande avec **timeout** et **sortie bornée** (stdout+stderr
@@ -1526,6 +1569,21 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
     #[test]
     fn no_test_lines_is_zero() {
         assert_eq!(parse_test_counts("nothing here"), (0, 0));
+    }
+
+    #[test]
+    fn parses_bench_score_last_finite() {
+        let out = "Compiling…\nRunning…\nRSI_BENCH_SCORE=1234.5\nnoise\n";
+        assert_eq!(parse_bench_score(out), Some(1234.5));
+        // dernière valeur retenue
+        assert_eq!(
+            parse_bench_score("RSI_BENCH_SCORE=1\nRSI_BENCH_SCORE=2\n"),
+            Some(2.0)
+        );
+        // absente ou non finie ⇒ None
+        assert_eq!(parse_bench_score("pas de score"), None);
+        assert_eq!(parse_bench_score("RSI_BENCH_SCORE=inf"), None);
+        assert_eq!(parse_bench_score("RSI_BENCH_SCORE=abc"), None);
     }
 
     #[test]

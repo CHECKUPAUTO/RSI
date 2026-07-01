@@ -40,7 +40,7 @@ use rsi::dgm::{
 
 const VALUE_FLAGS: &[&str] = &[
     "--goal", "--allow", "--steps", "--seed", "--package-subdir", "--test-args", "--backend",
-    "--model", "--ollama-host", "--ollama-port", "--timeout", "--backups",
+    "--model", "--ollama-host", "--ollama-port", "--timeout", "--backups", "--bench",
 ];
 
 fn main() {
@@ -109,6 +109,11 @@ fn main() {
             .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
             .unwrap_or_default(),
         score_from_passrate: true,
+        // Option B : `--bench "run --release --example bench_dot"` ⇒ score = perf
+        // mesurée (RSI_BENCH_SCORE) au lieu du pass-rate ⇒ « optimise X » a un gradient.
+        bench_command: flag_value(&args, "--bench")
+            .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
+            .unwrap_or_default(),
         timeout: Duration::from_secs(timeout_secs),
         ..Default::default()
     };
@@ -279,6 +284,7 @@ fn usage() {
            --backend ollama|claude (défaut ollama)    --model NAME\n  \
            --package-subdir DIR  sous-crate à builder  --test-args \"ARGS\"\n  \
            --timeout SECS        borne par cargo (défaut 300)\n  \
+           --bench \"ARGS\"        score = perf mesurée (RSI_BENCH_SCORE) au lieu\n                          du pass-rate — ex. \"run --release --example bench_dot\"\n  \
            --promote             applique le meilleur variant tout-au-vert\n  \
            --backups DIR         sauvegardes (défaut <ws>/.rsi_backups)\n\n\
          Backend Ollama local par défaut (http://127.0.0.1:11434). Claude :\n\
