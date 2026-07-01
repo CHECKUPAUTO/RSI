@@ -152,15 +152,25 @@ fn main() {
     for (i, o) in outcomes.iter().enumerate() {
         match o {
             StepOutcome::NoProposal => println!("  step {i:2} · pas de proposition"),
-            StepOutcome::Evaluated { accepted, fitness, variant_id, .. } => println!(
-                "  step {i:2} · {} · compiles={} passed={} failed={} score={:.4} · {}",
-                if *accepted { "ACCEPTÉ " } else { "rejeté  " },
-                fitness.compiles,
-                fitness.tests_passed,
-                fitness.tests_failed,
-                fitness.score,
-                &variant_id[..8.min(variant_id.len())],
-            ),
+            StepOutcome::Evaluated { accepted, fitness, variant_id, .. } => {
+                println!(
+                    "  step {i:2} · {} · compiles={} passed={} failed={} score={:.4} · {}",
+                    if *accepted { "ACCEPTÉ " } else { "rejeté  " },
+                    fitness.compiles,
+                    fitness.tests_passed,
+                    fitness.tests_failed,
+                    fitness.score,
+                    &variant_id[..8.min(variant_id.len())],
+                );
+                // Raison du rejet (patch non appliqué vs erreur de compilation vs
+                // test échoué) : la 1ʳᵉ ligne des notes suffit à diagnostiquer.
+                if !*accepted {
+                    let reason = fitness.notes.lines().next().unwrap_or("").trim();
+                    if !reason.is_empty() {
+                        println!("           ↳ {}", &reason[..reason.len().min(160)]);
+                    }
+                }
+            }
         }
     }
 
