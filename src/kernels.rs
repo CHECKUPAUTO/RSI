@@ -10,23 +10,28 @@
 //! `examples/bench_*` qui imprime `RSI_BENCH_SCORE=<débit>` pour donner un
 //! gradient de perf réel. **std-only, sans dépendance.**
 
-/// Produit matrice-matrice C = A·B (row-major, N×N), ordre i,j,k.
+/// Produit matrice-matrice C = A·B (row-major, N×N). `c` est **écrasé**
+/// (pas accumulé) : le contenu entrant de `c` est ignoré.
 ///
-/// Implémentation naïve délibérément *hostile au cache* (k interne balaie une
-/// colonne de B à grands pas) : il existe un vrai *headroom* qu'un tuilage
-/// (blocking) capture. C'est la cible que la boucle DGM cherche à accélérer
-/// **à résultat identique** (cf. `examples/bench_kernel`).
+/// Ordre de boucles i,k,j : la boucle interne balaie B et C **contigûment**
+/// (auto-vectorisable), contrairement à l'ordre naïf i,j,k dont le k interne
+/// saute de ligne en ligne dans B (hostile au cache). Ce réordonnancement a
+/// été **découvert par la boucle DGM** (qwen3-coder:30b local, Jetson Thor,
+/// ×6,6 mesuré à n=512, cf. `examples/bench_kernel`) ; la revue humaine a
+/// ajouté le zérotage de ligne, absent du patch accepté (les tests d'alors ne
+/// passaient que des `c` déjà nuls — trou de spec depuis fermé par
+/// `matmul_overwrites_dirty_output`).
 pub fn matmul(a: &[f32], b: &[f32], c: &mut [f32], n: usize) {
     assert_eq!(a.len(), n * n);
     assert_eq!(b.len(), n * n);
     assert_eq!(c.len(), n * n);
     for i in 0..n {
-        for j in 0..n {
-            let mut s = 0.0f32;
-            for k in 0..n {
-                s += a[i * n + k] * b[k * n + j];
+        c[i * n..i * n + n].fill(0.0);
+        for k in 0..n {
+            let aik = a[i * n + k];
+            for j in 0..n {
+                c[i * n + j] += aik * b[k * n + j];
             }
-            c[i * n + j] = s;
         }
     }
 }
@@ -46,16 +51,17 @@ mod tests {
             .collect()
     }
 
-    /// Référence indépendante (triple boucle, ordre différent) pour vérifier que
-    /// toute réécriture de `matmul` calcule bien le même produit.
+    /// Référence indépendante (ordre i,j,k, différent de l'implémentation) pour
+    /// vérifier que toute réécriture de `matmul` calcule bien le même produit.
     fn matmul_reference(a: &[f32], b: &[f32], n: usize) -> Vec<f32> {
         let mut c = vec![0.0f32; n * n];
         for i in 0..n {
-            for k in 0..n {
-                let aik = a[i * n + k];
-                for j in 0..n {
-                    c[i * n + j] += aik * b[k * n + j];
+            for j in 0..n {
+                let mut s = 0.0f32;
+                for k in 0..n {
+                    s += a[i * n + k] * b[k * n + j];
                 }
+                c[i * n + j] = s;
             }
         }
         c
@@ -76,6 +82,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn matmul_overwrites_dirty_output() {
+        // Contrat : C = A·B, le contenu ENTRANT de c est ignoré. Le patch DGM
+        // accepté (réordonnancement i,k,j) accumulait dans c sans le zéroter —
+        // invisible pour les tests d'alors qui passaient toujours un c nul.
+        // Ce test ferme ce trou de spec : c sale ⇒ même résultat.
+        let n = 16;
+        let a = matrix(n, 0xA1);
+        let b = matrix(n, 0xB2);
+        let expect = matmul_reference(&a, &b, n);
+        let mut c = vec![123.456f32; n * n]; // sortie « sale »
+        matmul(&a, &b, &mut c, n);
+        for (x, y) in c.iter().zip(&expect) {
+            assert!((x - y).abs() <= 1e-3 * (1.0 + y.abs()), "{x} vs {y}");
+        }
+        // Idempotence : un second appel rend exactement le même C.
+        let first = c.clone();
+        matmul(&a, &b, &mut c, n);
+        assert_eq!(c, first);
     }
 
     #[test]
