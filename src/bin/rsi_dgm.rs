@@ -40,7 +40,7 @@ use rsi::dgm::{
 
 const VALUE_FLAGS: &[&str] = &[
     "--goal", "--allow", "--steps", "--seed", "--package-subdir", "--test-args", "--backend",
-    "--model", "--ollama-host", "--ollama-port", "--timeout", "--backups", "--bench",
+    "--model", "--ollama-host", "--ollama-port", "--timeout", "--backups", "--bench", "--min-gain",
 ];
 
 fn main() {
@@ -133,13 +133,10 @@ fn main() {
     );
 
     // --- Boucle. ------------------------------------------------------------ //
-    let mut engine = DgmEngine::new(
-        Archive::with_root(baseline.clone()),
-        proposer,
-        evaluator,
-        DgmConfig::new(&ws, &goal),
-        seed,
-    );
+    let min_gain: f64 = flag_value(&args, "--min-gain").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let mut config = DgmConfig::new(&ws, &goal);
+    config.min_score_gain = min_gain;
+    let mut engine = DgmEngine::new(Archive::with_root(baseline.clone()), proposer, evaluator, config, seed);
 
     println!("• boucle DGM : {steps} étapes, backend={backend}, fichiers={allowed:?}\n");
     let outcomes = match engine.run(steps) {
@@ -295,6 +292,7 @@ fn usage() {
            --package-subdir DIR  sous-crate à builder  --test-args \"ARGS\"\n  \
            --timeout SECS        borne par cargo (défaut 300)\n  \
            --bench \"ARGS\"        score = perf mesurée (RSI_BENCH_SCORE) au lieu\n                          du pass-rate — ex. \"run --release --example bench_dot\"\n  \
+           --min-gain FRAC       gain relatif de score minimal (anti-bruit),\n                          ex. 0.02 = ≥ 2 %% (défaut 0 ; gains structurels exemptés)\n  \
            --promote             applique le meilleur variant tout-au-vert\n  \
            --backups DIR         sauvegardes (défaut <ws>/.rsi_backups)\n\n\
          Backend Ollama local par défaut (http://127.0.0.1:11434). Claude :\n\

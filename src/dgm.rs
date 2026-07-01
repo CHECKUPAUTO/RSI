@@ -848,6 +848,26 @@ impl Evaluator for CargoEvaluator {
     }
 }
 
+/// Anti-bruit : quand l'amélioration ne porte QUE sur le `score` (barrières
+/// compile/tests à égalité), exige un gain relatif ≥ `min_gain` (rapporté à
+/// `|score parent|`). Les améliorations **structurelles** (compile, tests) sont
+/// toujours acceptées. `min_gain <= 0` ⇒ pas de seuil.
+fn meets_min_gain(cand: &Fitness, parent: &Fitness, min_gain: f64) -> bool {
+    if min_gain <= 0.0 {
+        return true;
+    }
+    // Gain structurel (compile / tests) : toujours accepté.
+    if cand.compiles != parent.compiles
+        || cand.tests_failed != parent.tests_failed
+        || cand.tests_passed != parent.tests_passed
+    {
+        return true;
+    }
+    // Gain purement de score : exiger le seuil relatif.
+    let base = parent.score.abs().max(1e-12);
+    cand.score >= parent.score + base * min_gain
+}
+
 /// Extrait la dernière valeur `RSI_BENCH_SCORE=<f64>` d'une sortie de bench
 /// (fonction pure, testable). `None` si absente ou non finie.
 fn parse_bench_score(output: &str) -> Option<f64> {
@@ -1193,6 +1213,14 @@ pub struct DgmConfig {
     pub accept_requires_all_green: bool,
     /// Combien de justifications de rejet récentes re-fournir au proposeur.
     pub rejection_memory: usize,
+    /// **Gain minimal relatif** exigé quand l'amélioration porte *uniquement*
+    /// sur le `score` (barrières compile/tests à égalité). Anti-bruit : une
+    /// mesure de perf a une variance run-to-run ; sans seuil, la boucle
+    /// « accepte » le moindre écart, y compris du bruit. `0.0` = comportement
+    /// d'origine (tout `>` strict accepté). Ex. `0.02` = exiger ≥ 2 % de gain.
+    /// Sans effet sur les gains *structurels* (compile / tests) qui restent
+    /// toujours acceptés.
+    pub min_score_gain: f64,
 }
 
 impl DgmConfig {
@@ -1202,6 +1230,7 @@ impl DgmConfig {
             goal: goal.into(),
             accept_requires_all_green: true,
             rejection_memory: 8,
+            min_score_gain: 0.0,
         }
     }
 }
@@ -1304,7 +1333,9 @@ impl<P: Proposer, E: Evaluator> DgmEngine<P, E> {
             .clone()
             .unwrap_or_else(|| Fitness::broken("parent had no fitness"));
         let gate_ok = !self.config.accept_requires_all_green || fitness.all_green();
-        let accepted = gate_ok && fitness.is_better_than(&parent_fit);
+        let accepted = gate_ok
+            && fitness.is_better_than(&parent_fit)
+            && meets_min_gain(&fitness, &parent_fit, self.config.min_score_gain);
 
         let seq = self.next_seq;
         self.next_seq += 1;
@@ -1570,6 +1601,21 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
     #[test]
     fn no_test_lines_is_zero() {
         assert_eq!(parse_test_counts("nothing here"), (0, 0));
+    }
+
+    #[test]
+    fn min_gain_rejects_noise_keeps_real_and_structural() {
+        let base = fit(true, 176, 0, 19640.0);
+        let noise = fit(true, 176, 0, 19689.0); // +0.25 % → bruit
+        let real = fit(true, 176, 0, 20500.0); // +4.4 % → réel
+        let more_tests = fit(true, 177, 0, 19000.0); // moins de perf mais +1 test
+        // sans seuil : tout `>` accepté
+        assert!(meets_min_gain(&noise, &base, 0.0));
+        // seuil 2 % : le bruit est rejeté, le vrai gain passe
+        assert!(!meets_min_gain(&noise, &base, 0.02));
+        assert!(meets_min_gain(&real, &base, 0.02));
+        // amélioration STRUCTURELLE (tests) toujours acceptée, même seuil actif
+        assert!(meets_min_gain(&more_tests, &base, 0.02));
     }
 
     #[test]
