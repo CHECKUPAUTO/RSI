@@ -395,10 +395,20 @@ fn parse_response(raw: &str) -> Result<Vec<String>, LlmError> {
     };
     let json = crate::json::Json::parse(body.trim())
         .map_err(|e| LlmError::Backend(format!("JSON Ollama invalide: {e}")))?;
-    let text = json
-        .get("response")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| LlmError::Backend("champ 'response' absent".to_string()))?;
+    let text = match json.get("response").and_then(|v| v.as_str()) {
+        Some(t) => t,
+        None => {
+            // Ollama renvoie `{"error": "..."}` en cas de problème (prompt trop
+            // long, modèle absent…) : on le remonte tel quel au lieu d'un
+            // « champ 'response' absent » opaque.
+            let msg = json
+                .get("error")
+                .and_then(|v| v.as_str())
+                .map(|e| format!("Ollama a renvoyé une erreur: {e}"))
+                .unwrap_or_else(|| "champ 'response' absent".to_string());
+            return Err(LlmError::Backend(msg));
+        }
+    };
     let props: Vec<String> = text
         .lines()
         .map(|l| l.trim().to_string())
@@ -492,7 +502,15 @@ impl LlmClient for OllamaClient {
         stream
             .read_to_string(&mut raw)
             .map_err(|e| LlmError::Backend(format!("lecture: {e}")))?;
-        parse_response(&raw)
+        let out = parse_response(&raw);
+        if out.is_err() && std::env::var("RSI_DGM_DEBUG").is_ok() {
+            let preview: String = raw.chars().take(1500).collect();
+            eprintln!(
+                "[ollama] réponse HTTP brute ({} chars) :\n{preview}\n--- fin ---",
+                raw.len()
+            );
+        }
+        out
     }
 }
 
