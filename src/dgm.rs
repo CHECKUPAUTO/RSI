@@ -691,24 +691,93 @@ pub fn promote_to_live(live_root: &Path, patch: &Patch, backup_dir: &Path) -> Re
 fn patch_file_with_backup(target: &Path, find: &str, replace: &str, backup_dir: &Path) -> Result<String> {
     let content = std::fs::read_to_string(target)
         .map_err(|e| DgmError::Apply(format!("read {}: {e}", target.display())))?;
-    let occurrences = content.matches(find).count();
-    match occurrences {
-        0 => return Err(DgmError::Apply(format!("pattern not found in {}", target.display()))),
-        1 => {}
-        n => {
-            return Err(DgmError::Apply(format!(
-                "pattern is not unique in {} ({n} occurrences)",
-                target.display()
-            )))
-        }
-    }
+    let (start, end) = locate_match(&content, find)
+        .map_err(|msg| DgmError::Apply(format!("{msg} in {}", target.display())))?;
     std::fs::create_dir_all(backup_dir)?;
     let id = sha256_hex(&format!("{}|{}", target.display(), content))[..16].to_string();
     std::fs::write(backup_dir.join(format!("{id}.bak")), &content)?;
-    let patched = content.replacen(find, replace, 1);
+    let mut patched = String::with_capacity(content.len() - (end - start) + replace.len());
+    patched.push_str(&content[..start]);
+    patched.push_str(replace);
+    patched.push_str(&content[end..]);
     std::fs::write(target, patched)
         .map_err(|e| DgmError::Apply(format!("write {}: {e}", target.display())))?;
     Ok(id)
+}
+
+/// Localise le span d'octets `[start, end)` de `content` que `find` doit
+/// remplacer. Deux passes, de la plus stricte à la plus tolérante :
+///
+///   1. **exacte** : `find` doit apparaître *exactement une fois* (0 ⇒ on tente
+///      le repli ; >1 ⇒ ambigu, rejet immédiat) ;
+///   2. **ligne-à-ligne insensible aux espaces** : le modèle local recopie
+///      souvent le bloc avec une indentation légèrement différente ⇒ chaque
+///      ligne est comparée après `trim`, les lignes vides de tête/queue sont
+///      ignorées, et l'appariement doit rester **unique** (sinon rejet). Le
+///      span rendu couvre des lignes entières (sans le `\n` final), si bien que
+///      les sauts de ligne autour du bloc sont préservés.
+///
+/// La barrière compile+tests+bench et la contrainte d'unicité garantissent que
+/// ce repli ne peut ni corrompre l'arbre vivant ni éditer la mauvaise
+/// occurrence : au pire, un candidat mal aligné ne compile pas → rejeté.
+fn locate_match(content: &str, find: &str) -> std::result::Result<(usize, usize), String> {
+    match content.matches(find).count() {
+        1 => {
+            let start = content.find(find).unwrap();
+            return Ok((start, start + find.len()));
+        }
+        0 => {} // absent tel quel → tente le repli tolérant aux espaces
+        n => return Err(format!("pattern is not unique ({n} occurrences)")),
+    }
+
+    let file_lines = line_spans(content);
+    let needle: Vec<&str> = find.lines().map(str::trim).collect();
+    let first = needle.iter().position(|l| !l.is_empty());
+    let last = needle.iter().rposition(|l| !l.is_empty());
+    let needle = match (first, last) {
+        (Some(a), Some(b)) => &needle[a..=b],
+        _ => return Err("pattern not found".to_string()),
+    };
+    let w = needle.len();
+    if w == 0 || file_lines.len() < w {
+        return Err("pattern not found".to_string());
+    }
+
+    let mut hits: Vec<usize> = Vec::new();
+    for start in 0..=(file_lines.len() - w) {
+        let matches = (0..w).all(|k| {
+            let (s, e) = file_lines[start + k];
+            content[s..e].trim() == needle[k]
+        });
+        if matches {
+            hits.push(start);
+        }
+    }
+    match hits.as_slice() {
+        [start] => {
+            let (s, _) = file_lines[*start];
+            let (_, e) = file_lines[*start + w - 1];
+            Ok((s, e))
+        }
+        [] => Err("pattern not found".to_string()),
+        many => Err(format!("pattern is not unique ({} fuzzy occurrences)", many.len())),
+    }
+}
+
+/// Spans d'octets `[début, fin)` de chaque ligne de `s`, **sans** le `\n` final.
+fn line_spans(s: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut start = 0;
+    for (i, ch) in s.char_indices() {
+        if ch == '\n' {
+            spans.push((start, i));
+            start = i + 1;
+        }
+    }
+    if start < s.len() || spans.is_empty() {
+        spans.push((start, s.len()));
+    }
+    spans
 }
 
 fn unique_tmp_dir() -> PathBuf {
@@ -1578,6 +1647,47 @@ mod tests {
         let snap = WorkspaceSnapshot::create(&live).unwrap();
         let err = snap.apply(&Patch::new("a.rs", "let v = 1;", "let v = 2;"));
         assert!(err.is_err(), "non-unique pattern must be rejected");
+        let _ = std::fs::remove_dir_all(&live);
+    }
+
+    #[test]
+    fn fuzzy_match_tolerates_indentation() {
+        // Le modèle recopie le bloc avec une indentation différente (2 espaces
+        // au lieu de 4) : l'appariement exact échoue, le repli ligne-à-ligne le
+        // retrouve et édite les BONNES lignes en préservant les alentours.
+        let content = "fn f() {\n    let x = 0;\n    g();\n}\n";
+        let (s, e) = locate_match(content, "  let x = 0;\n  g();").unwrap();
+        assert_eq!(&content[s..e], "    let x = 0;\n    g();");
+    }
+
+    #[test]
+    fn fuzzy_match_stays_unique() {
+        // Deux blocs identiques après trim ⇒ le repli refuse (jamais d'édition
+        // ambiguë, même en tolérant les espaces).
+        let content = "  a();\n  a();\n";
+        assert!(locate_match(content, "a();").is_err());
+    }
+
+    #[test]
+    fn exact_match_preferred_over_fuzzy() {
+        // Présent tel quel exactement une fois → chemin exact (span = substring).
+        let content = "let value = 1;\n";
+        let (s, e) = locate_match(content, "let value = 1;").unwrap();
+        assert_eq!(&content[s..e], "let value = 1;");
+    }
+
+    #[test]
+    fn fuzzy_patch_applies_through_snapshot() {
+        // Bout en bout : un patch dont le FIND diffère par l'indentation est
+        // néanmoins appliqué dans le snapshot.
+        let live = fresh_dir("fuzzy");
+        write(&live, "a.rs", "fn f() {\n    let x = 0;\n}\n");
+        let snap = WorkspaceSnapshot::create(&live).unwrap();
+        // FIND sur-indenté (8 espaces) : PAS un sous-chaîne exacte de la ligne à
+        // 4 espaces ⇒ force le repli ligne-à-ligne.
+        snap.apply(&Patch::new("a.rs", "        let x = 0;", "    let x = 42;")).unwrap();
+        let src = std::fs::read_to_string(snap.root().join("a.rs")).unwrap();
+        assert_eq!(src, "fn f() {\n    let x = 42;\n}\n");
         let _ = std::fs::remove_dir_all(&live);
     }
 
