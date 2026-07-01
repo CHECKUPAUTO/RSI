@@ -481,5 +481,29 @@ Le LLM est une *source de propositions sous contrainte*, pas un pilote.
   La boucle n'accepte que ce qu'elle **prouve** — comportement voulu. Également
   validés sur le Thor : `hw_probe` (nvidia-smi + VRAM), SIMD mesuré ×4.44,
   177 tests, features scirust/wasm/observability/simd/llm-*.
+- ✅ **PREMIÈRE AMÉLIORATION AUTO-DÉCOUVERTE PROMUE — Jetson Thor** : la boucle
+  DGM (qwen3-coder:30b local) a **découvert seule** le réordonnancement de
+  boucles i,k,j de `kernels::matmul` (boucle interne contiguë sur B et C →
+  auto-vectorisation NEON) : **7.70 → 54.22 matmuls/s à n=512, ×6.6 mesuré**,
+  gate compile + 184 tests + bench + seuil anti-bruit 5 %, promu via
+  `--promote` (sauvegarde `.rsi_backups`). Chemin durci pour y parvenir :
+  parsing FIND/REPLACE **sans délimiteurs** (repli brut borné par les marqueurs
+  de section), appariement de patch **tolérant aux espaces** (`locate_match` :
+  exact d'abord, sinon ligne-à-ligne après `trim`, unicité exigée aux deux
+  étages), `options.num_predict=4096` (les réponses tronquées ne parsaient
+  pas), détail des échecs affiché (8 lignes de la queue cargo sous `↳`).
+  Cible dédiée `src/kernels.rs` (≠ `matmul_naive`, qui est le *baseline de
+  mesure* de `MeasuredSubstrate` — l'accélérer casserait l'instrument), bench
+  `bench_kernel` à n=512 (3 Mo > L2 de 2 Mo/cœur : à n=160 tout tenait en L2
+  et le naïf sans bounds-checks scorait déjà au niveau des variantes tuilées —
+  aucun headroom). **Leçon majeure** : la revue humaine du diff promu a trouvé
+  un bug de **contrat** invisible au gate — le patch accumulait dans `c` sans
+  zéroter (`C += A·B` au lieu de `C = A·B`), tous les tests passant un `c`
+  déjà nul. Correctif : zérotage de ligne (speedup préservé), trou de spec
+  fermé par `matmul_overwrites_dirty_output` (c sale + idempotence), référence
+  de test repassée en i,j,k (indépendante de l'implémentation). Le gate ne
+  vérifie que ce que les tests **expriment** : une spec incomplète laisse
+  passer des patchs plus rapides mais sémantiquement plus étroits — la boucle
+  outillée trouve, la revue garde le contrat. 178 tests, clippy 0 warning.
 - ⏭️ **Reste** : vérification formelle creusot/loom (P0.4) — outillage + temps
   expert ; non bloquant.
