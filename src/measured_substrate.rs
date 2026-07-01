@@ -17,7 +17,9 @@ use crate::substrate::{Substrate, SubstrateImprover};
 
 const TILES: [usize; 4] = [8, 16, 32, 64];
 
-fn matmul_naive(a: &[f32], b: &[f32], c: &mut [f32], n: usize) {
+/// Kernel de référence C = A·B (ordre i,j,k hostile au cache — la cible à
+/// battre). `pub` pour servir de sujet aux benchs DGM (`examples/bench_matmul`).
+pub fn matmul_naive(a: &[f32], b: &[f32], c: &mut [f32], n: usize) {
     // ordre i,j,k (k interne) : hostile au cache → référence à battre
     for i in 0..n {
         for j in 0..n {

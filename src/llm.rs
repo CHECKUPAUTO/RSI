@@ -343,17 +343,22 @@ pub struct OllamaClient {
     port: u16,
     model: String,
     timeout: std::time::Duration,
+    /// Plafond de tokens générés (`options.num_predict`). Beaucoup de configs
+    /// Ollama plafonnent bas par défaut (~128 tokens), ce qui **tronque** les
+    /// complétions multi-blocs de DGM en plein milieu (réponses non parsables).
+    num_predict: u32,
 }
 
 #[cfg(feature = "llm-ollama")]
 impl OllamaClient {
-    /// Client par défaut (`127.0.0.1:11434`, timeout 60 s) pour `model`.
+    /// Client par défaut (`127.0.0.1:11434`, timeout 60 s, 4096 tokens) pour `model`.
     pub fn new(model: impl Into<String>) -> Self {
         OllamaClient {
             host: "127.0.0.1".to_string(),
             port: 11434,
             model: model.into(),
             timeout: std::time::Duration::from_secs(60),
+            num_predict: 4096,
         }
     }
     pub fn with_endpoint(mut self, host: impl Into<String>, port: u16) -> Self {
@@ -365,17 +370,25 @@ impl OllamaClient {
         self.timeout = timeout;
         self
     }
+    /// Fixe le plafond de tokens générés (`options.num_predict`).
+    pub fn with_num_predict(mut self, n: u32) -> Self {
+        self.num_predict = n.max(1);
+        self
+    }
 }
 
 /// Construit la requête HTTP/1.1 brute pour `/api/generate` (fonction pure,
 /// testable hors-ligne). Le corps JSON est sérialisé par `crate::json` (gère
 /// l'échappement des sauts de ligne / guillemets du prompt).
 #[cfg(feature = "llm-ollama")]
-fn build_request(host: &str, port: u16, model: &str, prompt: &str) -> String {
+fn build_request(host: &str, port: u16, model: &str, prompt: &str, num_predict: u32) -> String {
+    let mut options = crate::json::Json::obj();
+    options.set("num_predict", crate::json::Json::Num(num_predict as f64));
     let mut body = crate::json::Json::obj();
     body.set("model", crate::json::Json::Str(model.to_string()));
     body.set("prompt", crate::json::Json::Str(prompt.to_string()));
     body.set("stream", crate::json::Json::Bool(false));
+    body.set("options", options);
     let body = body.to_string();
     format!(
         "POST /api/generate HTTP/1.1\r\n\
@@ -516,7 +529,7 @@ impl OllamaClient {
         stream.set_read_timeout(Some(self.timeout)).ok();
         stream.set_write_timeout(Some(self.timeout)).ok();
 
-        let req = build_request(&self.host, self.port, &self.model, prompt);
+        let req = build_request(&self.host, self.port, &self.model, prompt, self.num_predict);
         stream
             .write_all(req.as_bytes())
             .map_err(|e| LlmError::Backend(format!("écriture: {e}")))?;
@@ -870,7 +883,7 @@ mod ollama_tests {
 
     #[test]
     fn request_is_well_formed_http() {
-        let req = build_request("127.0.0.1", 11434, "llama3.2", "salut\n\"x\"");
+        let req = build_request("127.0.0.1", 11434, "llama3.2", "salut\n\"x\"", 4096);
         assert!(req.starts_with("POST /api/generate HTTP/1.1\r\n"));
         assert!(req.contains("Host: 127.0.0.1:11434\r\n"));
         assert!(req.contains("Content-Type: application/json\r\n"));
@@ -883,6 +896,9 @@ mod ollama_tests {
         assert_eq!(j.get("model").unwrap().as_str(), Some("llama3.2"));
         assert_eq!(j.get("prompt").unwrap().as_str(), Some("salut\n\"x\""));
         assert_eq!(j.get("stream").unwrap().as_bool(), Some(false));
+        // num_predict transmis (anti-troncature des complétions longues)
+        let np = j.get("options").and_then(|o| o.get("num_predict")).and_then(|v| v.as_u64());
+        assert_eq!(np, Some(4096));
     }
 
     #[test]
