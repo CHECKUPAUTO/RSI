@@ -462,5 +462,24 @@ Le LLM est une *source de propositions sous contrainte*, pas un pilote.
   `scirust-rsi` n'exposant pas de métrique matérielle, la mesure est en-process.
   Démo `examples/omega_real.rs`. 161 tests + doctests, clippy 0 warning (défaut +
   features publiques), CI verte (dépôt public).
+- ✅ **VALIDATION MATÉRIELLE COMPLÈTE — Jetson Thor (aarch64, GPU Blackwell)** :
+  la boucle DGM tourne **de bout en bout sur du réel** avec un **LLM local**
+  (qwen3-coder:30b via Ollama) : propose → applique en copie isolée →
+  `cargo build`+`test` (177 tests) → **bench de perf réel** (`--bench`,
+  `RSI_BENCH_SCORE` = débit de `dot`) → élitisme. Bugs réels trouvés sur
+  matériel et corrigés avec tests : *Transfer-Encoding chunked* d'Ollama,
+  recomposition multi-ligne, fences ``` (fermées ou non), prompt incluant le
+  contenu des fichiers (sinon le modèle hallucine du code), erreurs Ollama
+  surfacées, **`complete_raw`** préservant les lignes vides (sinon `FIND` ne
+  matche pas), raison de rejet affichée (`↳`). Un premier « ACCEPTÉ » à +0.25 %
+  s'est révélé être du **bruit de mesure** → ajout de `min_score_gain`
+  (`--min-gain`, anti-bruit : seuil relatif exigé pour les gains de score purs,
+  gains structurels exemptés). Verdict final avec `--min-gain 0.03` : 8/8
+  candidats compilent et passent les tests, aucun > 3 % — **`dot` est déjà
+  optimal sur ce bench** (à n=2¹⁶ le kernel est borné par la bande passante
+  mémoire, pas le calcul : les accumulateurs indépendants n'y peuvent rien).
+  La boucle n'accepte que ce qu'elle **prouve** — comportement voulu. Également
+  validés sur le Thor : `hw_probe` (nvidia-smi + VRAM), SIMD mesuré ×4.44,
+  177 tests, features scirust/wasm/observability/simd/llm-*.
 - ⏭️ **Reste** : vérification formelle creusot/loom (P0.4) — outillage + temps
   expert ; non bloquant.
