@@ -29,8 +29,11 @@ fn matrix(n: usize, seed: u64) -> Vec<f32> {
 }
 
 fn main() {
-    // n=160 : assez gros pour que le tuilage paie, assez petit pour rester rapide.
-    let n = 160usize;
+    // n=512 : ~1 Mo par matrice, 3 Mo au total — dépasse le L2 (2 Mo/cœur sur
+    // Neoverse V3AE / Jetson Thor) ⇒ le kernel naïf est réellement borné par le
+    // cache et le tuilage/réordonnancement a un vrai headroom. (À n=160 tout
+    // tenait en L2 : les variantes tuilées scoraient au niveau du bruit.)
+    let n = 512usize;
     let a = matrix(n, 0xA1);
     let b = matrix(n, 0xB2);
     let mut c = vec![0.0f32; n * n];
@@ -40,8 +43,8 @@ fn main() {
     std::hint::black_box(&c);
 
     // Médiane de `reps` mesures ; chaque mesure = `iters` matmuls.
-    let reps = 9;
-    let iters = 8u64;
+    let reps = 7;
+    let iters = 2u64;
     let mut times: Vec<f64> = Vec::with_capacity(reps);
     for _ in 0..reps {
         let t0 = Instant::now();

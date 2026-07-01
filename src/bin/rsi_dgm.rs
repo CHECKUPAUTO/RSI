@@ -159,12 +159,23 @@ fn main() {
                     fitness.score,
                     &variant_id[..8.min(variant_id.len())],
                 );
-                // Raison du rejet (patch non appliqué vs erreur de compilation vs
-                // test échoué) : la 1ʳᵉ ligne des notes suffit à diagnostiquer.
+                // Raison du rejet : les notes portent le détail (queue de la
+                // sortie cargo). On montre jusqu'à 8 lignes informatives —
+                // « build failed: » seul ne permet pas de diagnostiquer à
+                // distance ce que le modèle a cassé.
                 if !*accepted {
-                    let reason = fitness.notes.lines().next().unwrap_or("").trim();
-                    if !reason.is_empty() {
-                        println!("           ↳ {}", &reason[..reason.len().min(160)]);
+                    let mut shown = 0;
+                    for line in fitness.notes.lines() {
+                        let line = line.trim_end();
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+                        let capped: String = line.chars().take(160).collect();
+                        println!("           ↳ {capped}");
+                        shown += 1;
+                        if shown >= 8 {
+                            break;
+                        }
                     }
                 }
             }
