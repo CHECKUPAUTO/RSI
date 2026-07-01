@@ -996,18 +996,19 @@ impl<C: crate::llm::LlmClient> LlmCodeModel<C> {
 
 impl<C: crate::llm::LlmClient> CodeModel for LlmCodeModel<C> {
     fn complete(&self, prompt: &str) -> Result<String> {
-        // Les `LlmClient` (p. ex. Ollama) découpent la réponse en **une chaîne
-        // par ligne non vide** — adapté aux domaines de raffinement (1 candidat
-        // par ligne). Mais DGM a besoin de la **complétion multi-ligne entière**
-        // (enveloppe TARGET/FIND/REPLACE) : on **recompose** donc les lignes.
-        let out = self
+        // DGM a besoin de la complétion **brute entière** (lignes vides
+        // préservées) : le `FIND` de l'enveloppe TARGET/FIND/REPLACE doit matcher
+        // le fichier au caractère près. `complete_raw` évite le découpage par
+        // ligne (qui filtrait les lignes vides et faisait échouer l'application
+        // du patch — « pattern not found »).
+        let raw = self
             .client
-            .propose(prompt, 1)
+            .complete_raw(prompt)
             .map_err(|e| DgmError::Proposer(format!("{e:?}")))?;
-        if out.is_empty() {
+        if raw.trim().is_empty() {
             return Err(DgmError::Proposer("backend returned no completion".to_string()));
         }
-        Ok(out.join("\n"))
+        Ok(raw)
     }
 }
 

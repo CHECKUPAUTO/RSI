@@ -36,7 +36,20 @@ pub enum LlmError {
 pub trait LlmClient {
     /// Rend `k` propositions (texte brut) pour `prompt`. À charge du domaine
     /// ([`LlmRefineTask::parse_proposals`]) de les interpréter/valider.
+    ///
+    /// Convention des domaines de raffinement : **une proposition par ligne**
+    /// (les backends découpent la réponse en lignes non vides).
     fn propose(&self, prompt: &str, k: usize) -> Result<Vec<String>, LlmError>;
+
+    /// Rend la **complétion brute entière** (multi-ligne, lignes vides
+    /// **préservées**). Contrairement à [`propose`](Self::propose) qui découpe
+    /// par ligne (adapté au raffinement), ceci est requis par la boucle DGM
+    /// ([`crate::dgm`]) dont le `FIND` doit matcher le fichier **au caractère
+    /// près**. Défaut : recompose les lignes de `propose` (perd les lignes
+    /// vides) — les backends qui peuvent faire mieux (Ollama) le surchargent.
+    fn complete_raw(&self, prompt: &str) -> Result<String, LlmError> {
+        Ok(self.propose(prompt, 1)?.join("\n"))
+    }
 }
 
 /// Violation d'une contrainte de sûreté propre à un domaine (§3.4 du spike).
@@ -385,6 +398,25 @@ fn build_request(host: &str, port: u16, model: &str, prompt: &str) -> String {
 /// JSON, d'où des erreurs « token inattendu 'a' »).
 #[cfg(feature = "llm-ollama")]
 fn parse_response(raw: &str) -> Result<Vec<String>, LlmError> {
+    let text = extract_response_field(raw)?;
+    let props: Vec<String> = text
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if props.is_empty() {
+        Err(LlmError::Empty)
+    } else {
+        Ok(props)
+    }
+}
+
+/// Extrait le **texte brut** du champ `response` d'une réponse HTTP Ollama
+/// non-streamée (lignes vides **préservées**, contrairement à
+/// [`parse_response`]). Gère `Content-Length` **et** `Transfer-Encoding:
+/// chunked`, et remonte le champ `error` d'Ollama le cas échéant.
+#[cfg(feature = "llm-ollama")]
+fn extract_response_field(raw: &str) -> Result<String, LlmError> {
     let (headers, body) = raw
         .split_once("\r\n\r\n")
         .ok_or_else(|| LlmError::Backend("réponse HTTP sans corps".to_string()))?;
@@ -395,29 +427,18 @@ fn parse_response(raw: &str) -> Result<Vec<String>, LlmError> {
     };
     let json = crate::json::Json::parse(body.trim())
         .map_err(|e| LlmError::Backend(format!("JSON Ollama invalide: {e}")))?;
-    let text = match json.get("response").and_then(|v| v.as_str()) {
-        Some(t) => t,
+    match json.get("response").and_then(|v| v.as_str()) {
+        Some(t) => Ok(t.to_string()),
         None => {
             // Ollama renvoie `{"error": "..."}` en cas de problème (prompt trop
-            // long, modèle absent…) : on le remonte tel quel au lieu d'un
-            // « champ 'response' absent » opaque.
+            // long, modèle absent…) : on le remonte tel quel.
             let msg = json
                 .get("error")
                 .and_then(|v| v.as_str())
                 .map(|e| format!("Ollama a renvoyé une erreur: {e}"))
                 .unwrap_or_else(|| "champ 'response' absent".to_string());
-            return Err(LlmError::Backend(msg));
+            Err(LlmError::Backend(msg))
         }
-    };
-    let props: Vec<String> = text
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-    if props.is_empty() {
-        Err(LlmError::Empty)
-    } else {
-        Ok(props)
     }
 }
 
@@ -477,8 +498,10 @@ fn find_crlf(b: &[u8], from: usize) -> Option<usize> {
 }
 
 #[cfg(feature = "llm-ollama")]
-impl LlmClient for OllamaClient {
-    fn propose(&self, prompt: &str, _k: usize) -> Result<Vec<String>, LlmError> {
+impl OllamaClient {
+    /// Aller-retour HTTP `/api/generate` : rend la réponse HTTP **brute**
+    /// (en-têtes + corps). Partagé par `propose` et `complete_raw`.
+    fn http_roundtrip(&self, prompt: &str) -> Result<String, LlmError> {
         use std::io::{Read, Write};
         use std::net::{TcpStream, ToSocketAddrs};
 
@@ -502,13 +525,39 @@ impl LlmClient for OllamaClient {
         stream
             .read_to_string(&mut raw)
             .map_err(|e| LlmError::Backend(format!("lecture: {e}")))?;
-        let out = parse_response(&raw);
-        if out.is_err() && std::env::var("RSI_DGM_DEBUG").is_ok() {
+        Ok(raw)
+    }
+
+    /// Dump debug de la réponse HTTP brute si `RSI_DGM_DEBUG` est défini.
+    fn debug_dump(raw: &str) {
+        if std::env::var("RSI_DGM_DEBUG").is_ok() {
             let preview: String = raw.chars().take(1500).collect();
             eprintln!(
                 "[ollama] réponse HTTP brute ({} chars) :\n{preview}\n--- fin ---",
                 raw.len()
             );
+        }
+    }
+}
+
+#[cfg(feature = "llm-ollama")]
+impl LlmClient for OllamaClient {
+    fn propose(&self, prompt: &str, _k: usize) -> Result<Vec<String>, LlmError> {
+        let raw = self.http_roundtrip(prompt)?;
+        let out = parse_response(&raw);
+        if out.is_err() {
+            Self::debug_dump(&raw);
+        }
+        out
+    }
+
+    /// Complétion brute (lignes vides préservées) — requis par DGM pour que le
+    /// `FIND` matche le fichier au caractère près.
+    fn complete_raw(&self, prompt: &str) -> Result<String, LlmError> {
+        let raw = self.http_roundtrip(prompt)?;
+        let out = extract_response_field(&raw);
+        if out.is_err() {
+            Self::debug_dump(&raw);
         }
         out
     }
@@ -883,6 +932,23 @@ mod ollama_tests {
         assert!(matches!(parse_response(resp), Err(LlmError::Backend(_))));
         // réponse sans corps
         assert!(matches!(parse_response("HTTP/1.1 500\r\n"), Err(LlmError::Backend(_))));
+    }
+
+    #[test]
+    fn extract_preserves_blank_lines_and_whitespace() {
+        // complete_raw (via extract_response_field) doit préserver les lignes
+        // vides et l'indentation — sinon le FIND de DGM ne matche pas le fichier.
+        let resp = "HTTP/1.1 200 OK\r\n\r\n{\"response\":\"fn f() {\\n\\n    let x = 0;\\n}\"}";
+        assert_eq!(extract_response_field(resp).unwrap(), "fn f() {\n\n    let x = 0;\n}");
+    }
+
+    #[test]
+    fn error_field_is_surfaced() {
+        let resp = "HTTP/1.1 404 Not Found\r\n\r\n{\"error\":\"model 'x' not found\"}";
+        match extract_response_field(resp) {
+            Err(LlmError::Backend(m)) => assert!(m.contains("not found")),
+            other => panic!("attendu Backend error, obtenu {other:?}"),
+        }
     }
 }
 
