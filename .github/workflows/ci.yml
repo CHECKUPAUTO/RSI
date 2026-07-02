@@ -12,12 +12,19 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Relance manuelle (onglet Actions → Run workflow) : utile quand l'échec
+  # venait d'un état externe (dépôt de dépendance inaccessible, réécrit…).
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
   # Le cœur et les features testées ici sont std-only / crates publiques. Les
-  # features `scirust`/`forge`/`octasoma`/`ccos` tirent des dépôts git PRIVÉS
-  # (CHECKUPAUTO) non authentifiables en CI : elles sont volontairement exclues.
+  # features `scirust`/`forge`/`octasoma`/`ccos` (dépôts git CHECKUPAUTO) ne
+  # sont pas construites ici — mais ATTENTION : même non activées, cargo
+  # clone ces dépôts pour vérifier le lock sous `--locked`. La CI exige donc
+  # que ces dépôts restent PUBLICS et que les révisions épinglées dans
+  # Cargo.lock existent (un force-push amont casse la résolution — ré-épingler
+  # via `cargo update -p <dep>` le cas échéant).
   PUBLIC_FEATURES: "wasm observability simd llm-ollama llm-claude-ureq"
 
 jobs:
