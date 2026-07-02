@@ -56,18 +56,26 @@ pub fn matmul(a: &[f32], b: &[f32], c: &mut [f32], n: usize) {
 /// **écrasé** : son contenu entrant est ignoré. `src` et `dst` sont distincts
 /// (transposition hors-place — l'emprunteur l'impose déjà : `&`/`&mut`).
 ///
-/// Implémentation naïve délibérément *hostile au cache* : les écritures dans
-/// `dst` sautent de ligne en ligne (pas de N entre écritures consécutives),
-/// une ligne de cache chargée par élément écrit à grand N. Un tuilage capture
-/// un vrai headroom (×1.4–1.5 sondé à n=2048). Deuxième cible DGM, pour
-/// vérifier que la découverte du premier kernel **se généralise**
-/// (cf. `examples/bench_transpose`).
+/// Tuilage 64×64 **découvert par la boucle DGM** (qwen3-coder:30b local,
+/// Jetson Thor, +23 % mesuré à n=2048 vs le naïf ligne-à-ligne dont chaque
+/// écriture chargeait une ligne de cache entière) — et, contrairement aux deux
+/// étages de [`matmul`], **correct du premier coup** : le gate durci en amont
+/// (spec directe sur sortie sale, tailles 96/130 chevauchant la tuile,
+/// involution) ne laissait plus d'angle mort, et les tuiles partitionnent
+/// [0,n)² donc chaque élément de `dst` est écrit exactement une fois.
 pub fn transpose(src: &[f32], dst: &mut [f32], n: usize) {
     assert_eq!(src.len(), n * n);
     assert_eq!(dst.len(), n * n);
-    for i in 0..n {
-        for j in 0..n {
-            dst[j * n + i] = src[i * n + j];
+    const TILE: usize = 64;
+    for ii in (0..n).step_by(TILE) {
+        let i_end = (ii + TILE).min(n);
+        for jj in (0..n).step_by(TILE) {
+            let j_end = (jj + TILE).min(n);
+            for i in ii..i_end {
+                for j in jj..j_end {
+                    dst[j * n + i] = src[i * n + j];
+                }
+            }
         }
     }
 }
