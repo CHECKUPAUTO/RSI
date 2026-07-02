@@ -138,16 +138,19 @@ fn main() {
     config.min_score_gain = min_gain;
     let mut engine = DgmEngine::new(Archive::with_root(baseline.clone()), proposer, evaluator, config, seed);
 
-    println!("• boucle DGM : {steps} étapes, backend={backend}, fichiers={allowed:?}\n");
-    let outcomes = match engine.run(steps) {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("erreur : la boucle a échoué : {e}");
-            exit(1);
-        }
-    };
-    for (i, o) in outcomes.iter().enumerate() {
-        match o {
+    println!("• boucle DGM : {steps} étapes, backend={backend}, fichiers={allowed:?}");
+    println!("  (chaque étape = proposition LLM + build+test+bench du snapshot : ~1-3 min)\n");
+    // Étape par étape (et non `engine.run(steps)`) pour AFFICHER chaque
+    // résultat au fil de l'eau — huit étapes muettes ressemblent à un blocage.
+    for i in 0..steps {
+        let o = match engine.step() {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("erreur : la boucle a échoué : {e}");
+                exit(1);
+            }
+        };
+        match &o {
             StepOutcome::NoProposal => println!("  step {i:2} · pas de proposition"),
             StepOutcome::Evaluated { accepted, fitness, variant_id, .. } => {
                 println!(
