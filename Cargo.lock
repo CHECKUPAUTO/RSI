@@ -90,13 +90,15 @@ dependencies = [
 [[package]]
 name = "ccos"
 version = "0.3.0"
-source = "git+https://github.com/CHECKUPAUTO/CCOS#9ec12f14cf4c091320bf402907aa70d39e1adee0"
+source = "git+https://github.com/CHECKUPAUTO/CCOS#2c46b4ccbde6027b68f6f4cddfb5a7207dd7d831"
 dependencies = [
  "chrono",
+ "proc-macro2",
  "rand",
  "serde",
  "serde_json",
  "sha2",
+ "syn",
  "uuid",
 ]
 
@@ -237,7 +239,7 @@ dependencies = [
 [[package]]
 name = "forge-core"
 version = "0.1.0"
-source = "git+https://github.com/CHECKUPAUTO/forge#367add9d92d84003eeed946ad374a375c22f4bb0"
+source = "git+https://github.com/CHECKUPAUTO/forge#5afe067b6d1223b096c39abcefb935856034ccb9"
 dependencies = [
  "bincode",
  "rand",
@@ -584,7 +586,7 @@ dependencies = [
 [[package]]
 name = "octasoma"
 version = "0.4.0"
-source = "git+https://github.com/CHECKUPAUTO/octasoma#3e923323afe137967dae9b4ad1d1c2e5f52cd7cb"
+source = "git+https://github.com/CHECKUPAUTO/octasoma#461c0efc549a1bf0d9636b0c3c89a9b72ca1a518"
 dependencies = [
  "lz4_flex",
 ]
@@ -842,7 +844,7 @@ dependencies = [
 [[package]]
 name = "scirust-rsi"
 version = "0.1.0"
-source = "git+https://github.com/CHECKUPAUTO/scirust#54b7173f0eef86abe5dbed80b7f45efb2fc97681"
+source = "git+https://github.com/CHECKUPAUTO/scirust#edc94457773c4a83bd119ba362a50d6a189cfe69"
 dependencies = [
  "rand",
  "rand_distr",
