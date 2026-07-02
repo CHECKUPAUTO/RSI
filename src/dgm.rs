@@ -1136,8 +1136,10 @@ impl<M: CodeModel> LlmProposer<M> {
 
         // Contenu ACTUEL des fichiers éditables : sans lui, le modèle invente du
         // code inexistant et son `FIND` ne matche jamais. On borne chaque fichier
-        // pour garder le prompt raisonnable.
-        const MAX_FILE_CHARS: usize = 8_000;
+        // pour garder le prompt raisonnable (~7k tokens — le client Ollama fixe
+        // `num_ctx=16384`, cf. `llm::OllamaClient` : le défaut serveur de 4096
+        // tronquait le prompt sur les fichiers réels comme src/json.rs).
+        const MAX_FILE_CHARS: usize = 24_000;
         let mut sources = String::new();
         for path in &self.allowed_paths {
             match ctx.read(path) {

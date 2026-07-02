@@ -347,11 +347,20 @@ pub struct OllamaClient {
     /// Ollama plafonnent bas par défaut (~128 tokens), ce qui **tronque** les
     /// complétions multi-blocs de DGM en plein milieu (réponses non parsables).
     num_predict: u32,
+    /// Fenêtre de contexte (`options.num_ctx`). Le défaut Ollama est **4096
+    /// tokens, prompt + réponse compris** : sur les cibles DGM réelles (prompt
+    /// portant tout le fichier source + réponse multi-blocs), le prompt est
+    /// tronqué côté serveur (le modèle voit du code amputé → `FIND` fantômes,
+    /// « pattern not found » en série) et la réponse est coupée en plein bloc.
+    /// Constaté sur Jetson : `src/json.rs` 8/8 non-appliqués, `src/sha256.rs`
+    /// réponses coupées au milieu du `FIND`.
+    num_ctx: u32,
 }
 
 #[cfg(feature = "llm-ollama")]
 impl OllamaClient {
-    /// Client par défaut (`127.0.0.1:11434`, timeout 60 s, 4096 tokens) pour `model`.
+    /// Client par défaut (`127.0.0.1:11434`, timeout 60 s, 4096 tokens générés,
+    /// contexte 16384) pour `model`.
     pub fn new(model: impl Into<String>) -> Self {
         OllamaClient {
             host: "127.0.0.1".to_string(),
@@ -359,6 +368,7 @@ impl OllamaClient {
             model: model.into(),
             timeout: std::time::Duration::from_secs(60),
             num_predict: 4096,
+            num_ctx: 16384,
         }
     }
     pub fn with_endpoint(mut self, host: impl Into<String>, port: u16) -> Self {
@@ -375,15 +385,28 @@ impl OllamaClient {
         self.num_predict = n.max(1);
         self
     }
+    /// Fixe la fenêtre de contexte (`options.num_ctx`, prompt + réponse).
+    pub fn with_num_ctx(mut self, n: u32) -> Self {
+        self.num_ctx = n.max(512);
+        self
+    }
 }
 
 /// Construit la requête HTTP/1.1 brute pour `/api/generate` (fonction pure,
 /// testable hors-ligne). Le corps JSON est sérialisé par `crate::json` (gère
 /// l'échappement des sauts de ligne / guillemets du prompt).
 #[cfg(feature = "llm-ollama")]
-fn build_request(host: &str, port: u16, model: &str, prompt: &str, num_predict: u32) -> String {
+fn build_request(
+    host: &str,
+    port: u16,
+    model: &str,
+    prompt: &str,
+    num_predict: u32,
+    num_ctx: u32,
+) -> String {
     let mut options = crate::json::Json::obj();
     options.set("num_predict", crate::json::Json::Num(num_predict as f64));
+    options.set("num_ctx", crate::json::Json::Num(num_ctx as f64));
     let mut body = crate::json::Json::obj();
     body.set("model", crate::json::Json::Str(model.to_string()));
     body.set("prompt", crate::json::Json::Str(prompt.to_string()));
@@ -529,7 +552,14 @@ impl OllamaClient {
         stream.set_read_timeout(Some(self.timeout)).ok();
         stream.set_write_timeout(Some(self.timeout)).ok();
 
-        let req = build_request(&self.host, self.port, &self.model, prompt, self.num_predict);
+        let req = build_request(
+            &self.host,
+            self.port,
+            &self.model,
+            prompt,
+            self.num_predict,
+            self.num_ctx,
+        );
         stream
             .write_all(req.as_bytes())
             .map_err(|e| LlmError::Backend(format!("écriture: {e}")))?;
@@ -883,7 +913,7 @@ mod ollama_tests {
 
     #[test]
     fn request_is_well_formed_http() {
-        let req = build_request("127.0.0.1", 11434, "llama3.2", "salut\n\"x\"", 4096);
+        let req = build_request("127.0.0.1", 11434, "llama3.2", "salut\n\"x\"", 4096, 16384);
         assert!(req.starts_with("POST /api/generate HTTP/1.1\r\n"));
         assert!(req.contains("Host: 127.0.0.1:11434\r\n"));
         assert!(req.contains("Content-Type: application/json\r\n"));
@@ -899,6 +929,9 @@ mod ollama_tests {
         // num_predict transmis (anti-troncature des complétions longues)
         let np = j.get("options").and_then(|o| o.get("num_predict")).and_then(|v| v.as_u64());
         assert_eq!(np, Some(4096));
+        // num_ctx transmis (défaut serveur 4096 = prompt tronqué sur cibles réelles)
+        let nc = j.get("options").and_then(|o| o.get("num_ctx")).and_then(|v| v.as_u64());
+        assert_eq!(nc, Some(16384));
     }
 
     #[test]

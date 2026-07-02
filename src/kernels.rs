@@ -82,20 +82,27 @@ pub fn transpose(src: &[f32], dst: &mut [f32], n: usize) {
 
 /// Somme de tous les éléments (f64).
 ///
-/// Implémentation naïve délibérément **sérielle** : chaque itération dépend de
-/// la précédente (`acc += x`), le CPU ne peut ni pipeliner ni vectoriser — la
-/// latence de l'addition flottante borne le débit, loin de la bande passante
-/// mémoire. Des accumulateurs indépendants capturent un vrai headroom (×4.2
-/// sondé à n=2²⁰). Troisième cible DGM, d'un genre encore différent
-/// (latence de dépendance, ni cache ni calcul — cf. `examples/bench_reduce`).
+/// Somme **par blocs de 8** via itérateur — la somme intra-bloc, de taille
+/// fixe, est réduite en arbre vectorisé par LLVM au lieu de la chaîne sérielle
+/// `acc += x` (latence d'addition = goulot). **Découverte par la boucle DGM**
+/// (qwen3-coder:30b, Jetson Thor, ×2.6 mesuré : 1149 → 2952 réductions/s à
+/// n=2²⁰, deux promotions successives — la seconde a battu la première de
+/// +76 % avec cette forme plus simple). Revue : contrat propre du premier
+/// coup, comme `transpose` (gate verrouillé en amont).
 ///
 /// Contrat : toute réassociation est acceptable tant que le résultat reste à
 /// `1e-12 × Σ|x|` de la somme exacte (référence Kahan dans les tests) et que
-/// **tous** les éléments comptent (tailles non multiples de tout largeur de
-/// bloc plausible couvertes — un reste oublié échoue).
+/// **tous** les éléments comptent — le reste de `chunks_exact` est traité,
+/// les tailles non multiples de 8 des tests l'exigent.
 pub fn sum(v: &[f64]) -> f64 {
+    const CHUNK_SIZE: usize = 8;
     let mut acc = 0.0f64;
-    for &x in v {
+    let chunks = v.chunks_exact(CHUNK_SIZE);
+    let remainder = chunks.remainder();
+    for chunk in chunks {
+        acc += chunk.iter().sum::<f64>();
+    }
+    for &x in remainder {
         acc += x;
     }
     acc
