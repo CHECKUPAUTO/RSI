@@ -13,24 +13,40 @@
 /// Produit matrice-matrice C = A·B (row-major, N×N). `c` est **écrasé**
 /// (pas accumulé) : le contenu entrant de `c` est ignoré.
 ///
-/// Ordre de boucles i,k,j : la boucle interne balaie B et C **contigûment**
-/// (auto-vectorisable), contrairement à l'ordre naïf i,j,k dont le k interne
-/// saute de ligne en ligne dans B (hostile au cache). Ce réordonnancement a
-/// été **découvert par la boucle DGM** (qwen3-coder:30b local, Jetson Thor,
-/// ×6,6 mesuré à n=512, cf. `examples/bench_kernel`) ; la revue humaine a
-/// ajouté le zérotage de ligne, absent du patch accepté (les tests d'alors ne
-/// passaient que des `c` déjà nuls — trou de spec depuis fermé par
-/// `matmul_overwrites_dirty_output`).
+/// Deux étages d'optimisation, tous deux **découverts par la boucle DGM**
+/// (qwen3-coder:30b local, Jetson Thor, cf. `examples/bench_kernel`), chacun
+/// corrigé en revue humaine sur un point de contrat invisible au gate :
+///
+/// 1. **Ordre i,k,j** (×6,6 à n=512) : la boucle interne balaie B et C
+///    **contigûment** (auto-vectorisable), contrairement au naïf i,j,k dont le
+///    k interne saute de ligne en ligne dans B. Revue : le patch accumulait
+///    dans `c` sans zéroter (`C += A·B`) — les tests ne passaient que des `c`
+///    nuls ; trou fermé par `matmul_overwrites_dirty_output`.
+/// 2. **Tuilage i/k `TILE`=64** (+quart environ en sus) : les blocs de A et B
+///    restent chauds en L1/L2 entre itérations. Revue : le patch zérotait `c`
+///    *à l'intérieur* de la boucle de blocs `kk`, écrasant les contributions
+///    des blocs précédents — correct pour n ≤ 64 seulement, or les tests
+///    n'allaient que jusqu'à n=33 ; trou fermé par des tailles 96 et 130 dans
+///    `matmul_matches_reference`, le zérotage est sorti avant la boucle `kk`.
 pub fn matmul(a: &[f32], b: &[f32], c: &mut [f32], n: usize) {
     assert_eq!(a.len(), n * n);
     assert_eq!(b.len(), n * n);
     assert_eq!(c.len(), n * n);
-    for i in 0..n {
-        c[i * n..i * n + n].fill(0.0);
-        for k in 0..n {
-            let aik = a[i * n + k];
-            for j in 0..n {
-                c[i * n + j] += aik * b[k * n + j];
+    const TILE: usize = 64;
+    for ii in (0..n).step_by(TILE) {
+        let i_end = (ii + TILE).min(n);
+        for i in ii..i_end {
+            c[i * n..i * n + n].fill(0.0);
+        }
+        for kk in (0..n).step_by(TILE) {
+            let k_end = (kk + TILE).min(n);
+            for i in ii..i_end {
+                for k in kk..k_end {
+                    let aik = a[i * n + k];
+                    for j in 0..n {
+                        c[i * n + j] += aik * b[k * n + j];
+                    }
+                }
             }
         }
     }
@@ -69,7 +85,11 @@ mod tests {
 
     #[test]
     fn matmul_matches_reference() {
-        for &n in &[1usize, 2, 7, 16, 33] {
+        // Tailles de part et d'autre de toute taille de tuile plausible (64,
+        // 128…) : un tuilage dont l'accumulation est cassée entre blocs (p. ex.
+        // zérotage à l'intérieur de la boucle de blocs k — patch DGM réellement
+        // proposé, correct pour n <= tuile seulement) DOIT échouer ici.
+        for &n in &[1usize, 2, 7, 16, 33, 96, 130] {
             let a = matrix(n, 0xA1);
             let b = matrix(n, 0xB2);
             let mut c = vec![0.0f32; n * n];
