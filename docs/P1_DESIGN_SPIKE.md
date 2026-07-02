@@ -505,5 +505,17 @@ Le LLM est une *source de propositions sous contrainte*, pas un pilote.
   vérifie que ce que les tests **expriment** : une spec incomplète laisse
   passer des patchs plus rapides mais sémantiquement plus étroits — la boucle
   outillée trouve, la revue garde le contrat. 178 tests, clippy 0 warning.
+- ✅ **Deuxième étage auto-découvert + deuxième trou de spec fermé** : la boucle
+  a ensuite proposé un **tuilage i/k (TILE=64)** par-dessus l'ordre i,k,j —
+  idée réelle (+27 % mesuré corrigé ; **7.70 → 56.01 sur Thor, ×7.3 cumulé**),
+  mais le patch accepté zérotait `c` *dans* la boucle de blocs `kk` (chaque
+  bloc écrasait les précédents — correct pour n ≤ 64 seulement). Le gate n'a
+  rien vu : toutes les tailles de test étaient ≤ 33, et **le bench mesure la
+  vitesse, jamais la correction** — le score promu (55.89) chronométrait un
+  calcul faux. Revue : tailles 96/130 ajoutées à `matmul_matches_reference`
+  (vérifié : le test durci échoue sur le patch tel quel), zérotage sorti avant
+  `kk`. Doctrine issue des deux épisodes : chaque patch accepté est relu à la
+  recherche du cas que les tests ne couvrent pas, et ce cas **devient un
+  test** — le gate se durcit à chaque promotion.
 - ⏭️ **Reste** : vérification formelle creusot/loom (P0.4) — outillage + temps
   expert ; non bloquant.
