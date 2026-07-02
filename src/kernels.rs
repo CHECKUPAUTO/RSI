@@ -52,6 +52,26 @@ pub fn matmul(a: &[f32], b: &[f32], c: &mut [f32], n: usize) {
     }
 }
 
+/// Transposition hors-place `dst = srcᵀ` (row-major, N×N). `dst` est
+/// **écrasé** : son contenu entrant est ignoré. `src` et `dst` sont distincts
+/// (transposition hors-place — l'emprunteur l'impose déjà : `&`/`&mut`).
+///
+/// Implémentation naïve délibérément *hostile au cache* : les écritures dans
+/// `dst` sautent de ligne en ligne (pas de N entre écritures consécutives),
+/// une ligne de cache chargée par élément écrit à grand N. Un tuilage capture
+/// un vrai headroom (×1.4–1.5 sondé à n=2048). Deuxième cible DGM, pour
+/// vérifier que la découverte du premier kernel **se généralise**
+/// (cf. `examples/bench_transpose`).
+pub fn transpose(src: &[f32], dst: &mut [f32], n: usize) {
+    assert_eq!(src.len(), n * n);
+    assert_eq!(dst.len(), n * n);
+    for i in 0..n {
+        for j in 0..n {
+            dst[j * n + i] = src[i * n + j];
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,6 +143,39 @@ mod tests {
         let first = c.clone();
         matmul(&a, &b, &mut c, n);
         assert_eq!(c, first);
+    }
+
+    #[test]
+    fn transpose_matches_spec() {
+        // Vérification DIRECTE de la spec (dst[j,i] == src[i,j]), indépendante
+        // de toute implémentation. Tailles de part et d'autre de toute tuile
+        // plausible (leçon matmul : un tuilage cassé entre blocs n'est visible
+        // qu'à n > tuile) ; 130 n'est multiple d'aucune tuile usuelle.
+        for &n in &[1usize, 2, 7, 16, 33, 96, 130] {
+            let src = matrix(n, 0xC3);
+            let mut dst = vec![123.456f32; n * n]; // sortie « sale » d'emblée
+            transpose(&src, &mut dst, n);
+            for i in 0..n {
+                for j in 0..n {
+                    assert_eq!(
+                        dst[j * n + i],
+                        src[i * n + j],
+                        "n={n}, dst[{j},{i}] != src[{i},{j}]"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn transpose_twice_is_identity() {
+        let n = 96;
+        let src = matrix(n, 0xD4);
+        let mut once = vec![0.0f32; n * n];
+        let mut twice = vec![0.0f32; n * n];
+        transpose(&src, &mut once, n);
+        transpose(&once, &mut twice, n);
+        assert_eq!(twice, src);
     }
 
     #[test]
