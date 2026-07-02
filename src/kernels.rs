@@ -80,6 +80,27 @@ pub fn transpose(src: &[f32], dst: &mut [f32], n: usize) {
     }
 }
 
+/// Somme de tous les éléments (f64).
+///
+/// Implémentation naïve délibérément **sérielle** : chaque itération dépend de
+/// la précédente (`acc += x`), le CPU ne peut ni pipeliner ni vectoriser — la
+/// latence de l'addition flottante borne le débit, loin de la bande passante
+/// mémoire. Des accumulateurs indépendants capturent un vrai headroom (×4.2
+/// sondé à n=2²⁰). Troisième cible DGM, d'un genre encore différent
+/// (latence de dépendance, ni cache ni calcul — cf. `examples/bench_reduce`).
+///
+/// Contrat : toute réassociation est acceptable tant que le résultat reste à
+/// `1e-12 × Σ|x|` de la somme exacte (référence Kahan dans les tests) et que
+/// **tous** les éléments comptent (tailles non multiples de tout largeur de
+/// bloc plausible couvertes — un reste oublié échoue).
+pub fn sum(v: &[f64]) -> f64 {
+    let mut acc = 0.0f64;
+    for &x in v {
+        acc += x;
+    }
+    acc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +172,49 @@ mod tests {
         let first = c.clone();
         matmul(&a, &b, &mut c, n);
         assert_eq!(c, first);
+    }
+
+    /// Référence : somme de Kahan (compensée) — quasi-exacte, indépendante de
+    /// toute stratégie d'accumulation qu'une réécriture pourrait choisir.
+    fn kahan_sum(v: &[f64]) -> f64 {
+        let (mut s, mut c) = (0.0f64, 0.0f64);
+        for &x in v {
+            let y = x - c;
+            let t = s + y;
+            c = (t - s) - y;
+            s = t;
+        }
+        s
+    }
+
+    #[test]
+    fn sum_matches_kahan_reference() {
+        // Tailles de part et d'autre de toute largeur de bloc plausible
+        // (8/16/64…) et non multiples : un reste de chunk oublié ÉCHOUE ici.
+        // Valeurs mêlées (positives et négatives) : l'annulation partielle
+        // punit aussi les réassociations dégénérées.
+        for &n in &[0usize, 1, 7, 8, 9, 63, 64, 65, 127, 130, 1001] {
+            let v: Vec<f64> = (0..n)
+                .map(|i| (((i * 2654435761) % 2001) as f64 - 1000.0) * 1e-3)
+                .collect();
+            let expect = kahan_sum(&v);
+            let got = sum(&v);
+            let mass: f64 = v.iter().map(|x| x.abs()).sum::<f64>().max(1.0);
+            assert!(
+                (got - expect).abs() <= 1e-12 * mass,
+                "n={n}: {got} vs {expect} (masse {mass})"
+            );
+        }
+    }
+
+    #[test]
+    fn sum_of_ones_is_exact() {
+        // n sommable exactement en f64 : aucune tolérance ici — chaque élément
+        // doit compter exactement une fois (ni doublon ni omission).
+        for &n in &[1usize, 100, 1000, 4097] {
+            let v = vec![1.0f64; n];
+            assert_eq!(sum(&v), n as f64, "n={n}");
+        }
     }
 
     #[test]
